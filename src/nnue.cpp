@@ -34,7 +34,11 @@
 // entry points additionally carry force_align_arg_pointer), so this removes the
 // hazard deterministically. This is the scalar reference evaluator; the rest of
 // the engine keeps full AVX, and the eval is not the search bottleneck.
-#if defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__))
+// Windows-only: MinGW's 16-byte stack alignment can fault on AVX stack spills
+// (0xC0000005). Linux/glibc realigns correctly, and there the command-line
+// -march=native target must NOT be overridden here — a no-avx TU clashes with the
+// fortified always_inline memcpy (built for the native target), failing the build.
+#if defined(_WIN32) && defined(__GNUC__)
 #pragma GCC target("no-avx,no-avx2")
 #endif
 
