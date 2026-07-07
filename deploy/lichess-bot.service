@@ -1,0 +1,25 @@
+# systemd service for running lichess-bot 24/7 with auto-restart.
+# Install:
+#   sudo cp deploy/lichess-bot.service /etc/systemd/system/
+#   (edit User/paths below to match your server)
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now lichess-bot
+#   journalctl -u lichess-bot -f        # watch logs
+
+[Unit]
+Description=lichess-bot (chess engine bullet bot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=user
+WorkingDirectory=/home/user/lichess-bot
+ExecStart=/home/user/lichess-bot/venv/bin/python3 /home/user/lichess-bot/lichess-bot.py
+Restart=always
+RestartSec=10
+# Keep the engine responsive; do not let the OOM killer target it lightly.
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target

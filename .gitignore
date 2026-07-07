@@ -1,0 +1,32 @@
+# Build artifacts
+/build/
+/bin/
+*.o
+*.d
+*.exe
+*.a
+
+# Engine assets (large binaries — distributed separately / fetched at deploy time)
+*.nnue
+*.bin
+syzygy/
+
+# Reference engines & saved test binaries (large; not part of the deliverable)
+engines/
+baseline/
+*.zip
+game_records/
+
+# Claude Code local settings (not for the public repo)
+.claude/
+
+# Python caches
+__pycache__/
+*.pyc
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

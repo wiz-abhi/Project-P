@@ -1,0 +1,76 @@
+# lichess-bot configuration for the engine — tuned for BULLET rating climb.
+# See deploy/DEPLOY.md. Reconcile with your installed lichess-bot's
+# config.yml.default if its schema differs; copy the engine/matchmaking/challenge
+# blocks below over the default.
+
+token: "PASTE_YOUR_BOT_TOKEN_HERE"     # Lichess BOT token with bot:play scope
+url: "https://lichess.org/"
+
+engine:
+  dir: "/home/user/engine/bin"         # ABSOLUTE path to the folder with the binary
+  working_dir: "/home/user/engine"     # so relative nets/ and book paths resolve
+  name: "engine"                       # the binary produced by `make` (bin/engine)
+  protocol: "uci"
+  ponder: false                        # no pondering (fair + simpler for bullet)
+
+  uci_options:
+    Threads: 2                         # GitHub-hosted runner has ~4 vCPU; leave room for the bridge/OS
+    Hash: 256                          # MB
+    Move Overhead: 400                 # ms; generous — runner->Lichess latency can be high, never flag
+    Use NNUE: true
+    EvalFile: "nets/nn-halfkp.nnue"    # relative to working_dir
+
+  # Optional: cap how long we ever think per move (safety); the engine's own time
+  # manager already handles this from the clock.
+  # go_commands:
+  #   movetime: 0
+
+# Opening book (enable once a Polyglot .bin is added; disabled for now).
+polyglot:
+  enabled: false
+  # book:
+  #   standard:
+  #     - "book/openings.bin"
+  # min_weight: 1
+  # selection: "weighted_random"
+
+# --- Seek games actively (drives the rating climb) ---
+matchmaking:
+  allow_matchmaking: true
+  challenge_variant: "standard"
+  challenge_timecontrol: "blitz"       # blitz 3+2: tolerant of runner latency, still engine-dominant
+  challenge_initial_time: 180          # 3 min base
+  challenge_increment: 2               # +2s/move — the increment cushions latency vs bullet
+  challenge_mode: "rated"
+  # Seek strong opponents so wins boost rating fast (client instruction: 2800-3500)
+  opponent_min_rating: 2800
+  opponent_max_rating: 3500
+  opponent_rating_difference: 500
+  challenge_timeout: 30                # minutes between matchmaking attempts if idle
+
+# --- Accept incoming challenges (in-band) ---
+challenge:
+  concurrency: 1                       # one game at a time (single instance)
+  sort_by: "best"
+  accept_bot: true
+  only_bot: false
+  max_increment: 10
+  min_increment: 0
+  max_base: 300                        # up to 5 min base
+  min_base: 120                        # >= 2 min base (blitz; avoids latency-risky bullet)
+  variants:
+    - standard
+  time_controls:
+    - blitz
+    - rapid
+  modes:
+    - rated
+
+# Misc
+abort_time: 20                         # seconds to wait before aborting a stalled game
+rate_limiting_delay: 0
+greeting:
+  hello: ""                            # keep quiet (no chat spam)
+  goodbye: ""
+
+pgn_directory: "game_records"          # save played games for later analysis
