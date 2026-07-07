@@ -20,6 +20,7 @@
 
 #include "attacks.hpp"
 #include "bitboard.hpp"
+#include "book.hpp"
 #include "eval.hpp"
 #include "movegen.hpp"
 #include "nnue.hpp"
@@ -194,6 +195,20 @@ Position               rootPos;
 std::deque<StateInfo>  rootStates;
 std::thread            searchThread;
 
+// Polyglot opening book. Enabled via the "OwnBook" option; the file is loaded
+// via the "BookFile" option. When enabled and the current root position is in
+// the book, "go" plays a book move directly and skips the search.
+//
+// Accessed via book() (a function-local static) so it is constructed on first
+// use rather than at static-init time, and never runs a static destructor at
+// process exit.
+Book& book() {
+    static Book* b = new Book();
+    return *b;
+}
+bool                   ownBook     = false;
+std::string            bookFilePath = "book/openings.bin";
+
 // Root position description for the search: the FEN of the "position" base plus
 // the game moves applied on top. Each Lazy-SMP worker rebuilds its own Position
 // from this so repetition / 50-move history is intact per-thread.
@@ -245,6 +260,18 @@ void set_position(std::istringstream& is) {
 // go ...
 void go(std::istringstream& is) {
     join_search();
+
+    // Opening book: if enabled and the current position is in the book, play a
+    // book move immediately and skip the search.
+    if (ownBook && book().loaded()) {
+        Move bm = book().probe(rootPos, /*pickBest=*/false);
+        if (bm != Move::none()) {
+            std::string uci = move_to_uci(bm);
+            std::cout << "info depth 0 score cp 0 pv " << uci << "\n"
+                      << "bestmove " << uci << std::endl;
+            return;
+        }
+    }
 
     SearchLimits limits;
     std::string  token;
@@ -298,6 +325,16 @@ void setoption(std::istringstream& is) {
             std::cout << "info string EvalFile load FAILED: " << EvalFilePath << "\n";
     } else if (name == "Use NNUE") {
         UseNNUE = (value == "true" || value == "1" || value == "True");
+    } else if (name == "OwnBook") {
+        ownBook = (value == "true" || value == "1" || value == "True");
+    } else if (name == "BookFile") {
+        bookFilePath = value;
+        if (book().load(bookFilePath))
+            std::cout << "info string BookFile loaded: " << bookFilePath
+                      << "\n";
+        else
+            std::cout << "info string BookFile load FAILED: " << bookFilePath
+                      << "\n";
     }
 }
 
@@ -316,6 +353,8 @@ void uci_loop_stdin() {
                       << "option name Move Overhead type spin default 30 min 0 max 5000\n"
                       << "option name EvalFile type string default nets/nn-halfkp.nnue\n"
                       << "option name Use NNUE type check default true\n"
+                      << "option name OwnBook type check default false\n"
+                      << "option name BookFile type string default book/openings.bin\n"
                       << "uciok" << std::endl;
         } else if (token == "isready") {
             std::cout << "readyok" << std::endl;
@@ -362,6 +401,11 @@ void loop(int argc, char** argv) {
     if (argc >= 2 && std::string(argv[1]) == "perft") {
         std::exit(perft_command(argc, argv));
     }
+
+    // Flush stdout on every insertion so each UCI response (notably
+    // "bestmove ...") reaches the GUI immediately instead of sitting in a
+    // block buffer — important when stdout is a pipe.
+    std::cout << std::unitbuf;
 
     // Default: initialize a start position then enter the stdin loop.
     rootStates.clear();

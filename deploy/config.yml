@@ -19,6 +19,8 @@ engine:
     Move Overhead: 400                 # ms; generous — runner->Lichess latency can be high, never flag
     Use NNUE: true
     EvalFile: "nets/nn-halfkp.nnue"    # relative to working_dir
+    OwnBook: true                      # engine plays Polyglot book moves in the opening
+    BookFile: "book/komodo.bin"        # relative to working_dir (downloaded by the workflow)
 
   # Optional: cap how long we ever think per move (safety); the engine's own time
   # manager already handles this from the clock.
@@ -46,7 +48,7 @@ matchmaking:
   opponent_min_rating: 2800
   opponent_max_rating: 3500
   opponent_rating_difference: 500
-  challenge_timeout: 30                # minutes between matchmaking attempts if idle
+  challenge_timeout: 5                 # minutes idle before seeking a game — low = climb faster
 
 # --- Accept incoming challenges (in-band) ---
 challenge:

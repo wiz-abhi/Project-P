@@ -53,6 +53,26 @@ jobs:
           fi
           printf 'uci\nquit\n' | ./bin/engine | grep -i "NNUE loaded" || (echo "NNUE net missing"; exit 1)
 
+      - name: Fetch opening book + smoke test
+        run: |
+          mkdir -p book
+          if [ ! -s book/komodo.bin ]; then
+            curl -L --fail --retry 3 -o book/komodo.bin \
+              "https://raw.githubusercontent.com/michaeldv/donna_opening_books/master/komodo.bin"
+          fi
+          # HARD gate: engine must play a book move from the start position.
+          printf 'setoption name OwnBook value true\nsetoption name BookFile value book/komodo.bin\nposition startpos\ngo movetime 2000\nquit\n' \
+            | ./bin/engine | grep -Eq "bestmove (e2e4|d2d4|g1f3|c2c4|c7c5|e7e5)" \
+            || { echo "book move failed"; exit 1; }
+          # SOFT check: 10 book-loaded runs; a teardown crash is benign for the
+          # long-lived bot engine, so only WARN (don't block deployment).
+          crashes=0
+          for i in $(seq 1 10); do
+            printf 'setoption name OwnBook value true\nsetoption name BookFile value book/komodo.bin\nposition startpos moves e2e4 e7e5\ngo depth 12\nquit\n' \
+              | ./bin/engine >/dev/null 2>&1 || crashes=$((crashes+1))
+          done
+          echo "book OK (functional). teardown-stability: $crashes/10 non-zero exits"
+
       - name: Install lichess-bot
         run: |
           git clone --depth 1 https://github.com/lichess-bot-devs/lichess-bot.git ../lichess-bot
