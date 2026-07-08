@@ -120,20 +120,37 @@ void TimeManager::init(const SearchLimits& limits, Color us, int /*ply*/) {
         return;
     }
 
-    // Standard tournament allocation from remaining time + increment.
+    // Allocation from remaining time + increment, hardened for bullet where
+    // fixed per-move latency (network + bridge) can flag us in long games.
     const int64_t time = limits.time[us];
     const int64_t inc  = limits.inc[us];
-    const int64_t mtg  = limits.movestogo > 0 ? limits.movestogo : 30;
 
-    int64_t opt = time / mtg + int64_t(inc * 0.8);
-    int64_t mx  = std::min<int64_t>(int64_t(time * 0.5), opt * 5);
+    // Moves-to-go horizon. Bullet games routinely run 60-80 plies, so a sudden-
+    // death game must budget for many more moves than the classic "30" or it
+    // starves the endgame (the exact cause of our flag losses). Assume ~40 of
+    // our own moves remain; cap a provided movestogo the same way.
+    const int64_t mtg = limits.movestogo > 0 ? std::min<int64_t>(limits.movestogo, 40) : 40;
 
-    // Never spend more than what is safely available.
-    const int64_t safeCap = std::max<int64_t>(1, time - overhead);
-    opt = std::min(opt, safeCap);
-    mx  = std::min(mx, safeCap);
-    opt = std::max<int64_t>(1, opt);
-    mx  = std::max(mx, opt);
+    // Time safely usable, after reserving the transmission overhead for THIS move.
+    const int64_t remaining = std::max<int64_t>(1, time - overhead);
+
+    // Optimum: an even slice of the remaining clock plus most of the increment
+    // (self-scaling: as remaining shrinks each move, so does the slice).
+    int64_t opt = remaining / mtg + int64_t(inc * 0.75);
+    // Maximum for one move: a small multiple of optimum and a small fraction of
+    // the clock, so no single fail-low can dump the whole clock.
+    int64_t mx = std::min<int64_t>(opt * 3, remaining / 4);
+
+    // Low-time safety net: when the clock is short, move almost instantly and let
+    // the increment carry us. This is what stops the endgame flagging in bullet.
+    if (remaining < 20 * overhead) {                       // ~8s at Overhead 400
+        const int64_t floorSpend = inc > 0 ? int64_t(inc * 0.5) : remaining / 30;
+        opt = std::min(opt, floorSpend);
+        mx  = std::min<int64_t>(mx, inc > 0 ? inc : remaining / 15);
+    }
+
+    opt = std::clamp<int64_t>(opt, 1, remaining);
+    mx  = std::clamp<int64_t>(mx, opt, remaining);
 
     optimumMs = opt;
     maximumMs = mx;
