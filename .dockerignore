@@ -1,0 +1,16 @@
+# Keep the Docker build context small. The Dockerfile fetches the net/book itself
+# and builds the engine from src/, so none of these are needed in the image.
+.git/
+baseline/
+engines/
+nets/
+book/
+build/
+bin/
+game_records/
+*.exe
+*.zip
+*.nnue
+*.bin
+tools/__pycache__/
+*.pyc
