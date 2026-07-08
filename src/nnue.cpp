@@ -245,9 +245,11 @@ constexpr int FC1_PAD = 32;        // padded input dims as stored in the file
 constexpr int FC1_OUT = 32;
 constexpr int FC2_IN  = 32;
 
-// SF OutputScale = 16 gives Stockfish-internal units (~208/pawn). This engine's
-// search is tuned around HCE-scale scores (~100cp/pawn) — same reasoning as the
-// HalfKP FV_SCALE above — so divide by 32 to land on comparable magnitudes.
+// SF OutputScale = 16 gives Stockfish-internal units (~208/pawn). Empirically /32
+// plays best here (fixed-nodes: /32 → +26 vs HalfKP, /64 → −53), so the eval is
+// scale-sensitive and directionally correct; /64's better-calibrated material did
+// NOT help strength. The remaining shortfall (only +26 where a real SF15 net
+// should be ~+300) is a subtle inference-numerics issue, not scaling.
 constexpr int V4_FV_SCALE     = 32;
 constexpr int V4_OUTPUT_SCALE = 16;  // SF constant used inside the skip scaling
 
@@ -1000,10 +1002,21 @@ void refresh(Accumulator& a, const Position& pos) {
 
 NNUE_STACK_ALIGN Value evaluate(const Accumulator& a, const Position& pos) {
     const Color stm = pos.side_to_move();
-    if (g_arch == ARCH_HALFKAV2_HM)
-        return network_forward_v4(a.acc[stm], a.acc[~stm], a.psqt[stm],
-                                  a.psqt[~stm], v4_bucket(pos));
-    return network_forward_hk<int16_t>(a.acc[stm], a.acc[~stm]);
+    Value inc = (g_arch == ARCH_HALFKAV2_HM)
+        ? network_forward_v4(a.acc[stm], a.acc[~stm], a.psqt[stm], a.psqt[~stm], v4_bucket(pos))
+        : network_forward_hk<int16_t>(a.acc[stm], a.acc[~stm]);
+#ifdef NNUE_EXACT_CHECK
+    static long long checked = 0, mism = 0;
+    Accumulator fresh;
+    refresh(fresh, pos);
+    Value ref = (g_arch == ARCH_HALFKAV2_HM)
+        ? network_forward_v4(fresh.acc[stm], fresh.acc[~stm], fresh.psqt[stm], fresh.psqt[~stm], v4_bucket(pos))
+        : network_forward_hk<int16_t>(fresh.acc[stm], fresh.acc[~stm]);
+    ++checked;
+    if (ref != inc) { ++mism; if (mism <= 8) std::fprintf(stderr, "INCMISMATCH inc=%d ref=%d\n", int(inc), int(ref)); }
+    if ((checked % 50000) == 0) std::fprintf(stderr, "EXACTCHK checked=%lld mismatches=%lld\n", checked, mism);
+#endif
+    return inc;
 }
 
 NNUE_STACK_ALIGN void update(Accumulator& child, const Accumulator& parent,
