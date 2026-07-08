@@ -41,8 +41,8 @@ matchmaking:
   allow_matchmaking: true
   challenge_variant: "standard"
   challenge_timecontrol: "bullet"      # bullet: engines overperform most (opponents flag/blunder)
-  challenge_initial_time: 120          # 2 min base  -> "2+1" bullet
-  challenge_increment: 1               # +1s/move — the increment cushions runner latency vs raw 1+0
+  challenge_initial_time: 60           # 1+0 bullet — highest rating ceiling (max opponent flagging)
+  challenge_increment: 0               # no increment; Move Overhead 400 is our flag-safety buffer
   challenge_mode: "rated"
   # Seek strong opponents so wins boost rating fast (client instruction: 2800-3500)
   opponent_min_rating: 2800
