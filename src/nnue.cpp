@@ -238,20 +238,22 @@ constexpr int V4_PSQT   = 8;       // PSQT buckets
 constexpr int V4_STACKS = 8;       // bucketed layer stacks
 constexpr int V4_PS_NB  = 11 * 64; // 704
 
-constexpr int FC0_IN  = 1024;      // = V4_HALF: 512 pairwise products per side
-constexpr int FC0_OUT = 16;        // 15 + 1 skip neuron
-constexpr int FC1_IN  = 15;
+constexpr int FC0_IN      = 1024;  // = V4_HALF: 512 pairwise products per side
+constexpr int FC0_OUT     = 16;    // FC_0_OUTPUTS + 1 skip neuron
+constexpr int FC_0_OUTPUTS = 15;   // fc_0 neurons that feed fc_1 (index 15 = skip)
+constexpr int FC1_IN  = 30;        // = FC_0_OUTPUTS * 2: [sqr(0..14), clip(0..14)]
 constexpr int FC1_PAD = 32;        // padded input dims as stored in the file
 constexpr int FC1_OUT = 32;
 constexpr int FC2_IN  = 32;
 
-// SF OutputScale = 16 gives Stockfish-internal units (~208/pawn). Empirically /32
-// plays best here (fixed-nodes: /32 → +26 vs HalfKP, /64 → −53), so the eval is
-// scale-sensitive and directionally correct; /64's better-calibrated material did
-// NOT help strength. The remaining shortfall (only +26 where a real SF15 net
-// should be ~+300) is a subtle inference-numerics issue, not scaling.
-constexpr int V4_FV_SCALE     = 32;
-constexpr int V4_OUTPUT_SCALE = 16;  // SF constant used inside the skip scaling
+// Final scaling. SF's raw layer output (materialist + positional) is first
+// divided by OutputScale=16 to get an internal Value, then REPORTED in
+// centipawns via UCI::to_cp: cp = value * 100 / NormalizeToPawnValue (=361).
+// So the centipawn number SF prints for "NNUE evaluation" (what nnue_cmp.py
+// parses) equals raw * 100 / (16 * 361). We reproduce that exactly here, which
+// also lands the eval on a ~100cp/pawn HCE-comparable scale for search.
+constexpr int V4_OUTPUT_SCALE = 16;   // SF OutputScale (also used in skip scaling)
+constexpr int V4_NORMALIZE    = 361;  // SF UCI::NormalizeToPawnValue (sf 15.1)
 
 // Expected FT hash: HalfKAv2_hm HashValue 0x7f234cb8 ^ (OutputDimensions(1024)*2)
 constexpr uint32_t kFtHashV4 = 0x7f234cb8u ^ (V4_HALF * 2);
@@ -766,13 +768,19 @@ NNUE_STACK_ALIGN Value network_forward_v4(const int16_t* acc_stm,
         f0[o] = s;
     }
 
-    // ac_0 + fc_1: 15 -> 32. Only the first 15 clipped activations feed fc_1
-    // (the file pads columns 15..31; the trainer serialises them as zeros, and
-    // Stockfish's scalar path likewise sums only InputDimensions=15 terms).
-    uint8_t a0[FC1_IN];
-    for (int i = 0; i < FC1_IN; ++i)
-        a0[i] = static_cast<uint8_t>(clamp127(f0[i] >> WEIGHT_SCALE_BITS));
+    // ac_sqr_0 + ac_0 -> fc_1 input (30 wide). Stockfish (nnue_architecture.h
+    // propagate + sqr_clipped_relu.h) builds fc_1's input as the CONCATENATION of
+    //   [0 ..14]  SqrClippedReLU(f0[0..14]) = clamp(0,127, (f0^2 >> 12) / 128)
+    //   [15..29]  ClippedReLU   (f0[0..14]) = clamp(0,127,  f0 >> 6)
+    // (index 15 of fc_0 is the skip neuron only; it does NOT feed fc_1.)
+    uint8_t a0[FC1_IN];  // FC1_IN == 30
+    for (int i = 0; i < FC_0_OUTPUTS; ++i) {
+        int64_t sq = ((int64_t(f0[i]) * f0[i]) >> (2 * WEIGHT_SCALE_BITS)) / 128;
+        a0[i]               = static_cast<uint8_t>(clamp127(int(sq)));
+        a0[FC_0_OUTPUTS + i] = static_cast<uint8_t>(clamp127(f0[i] >> WEIGHT_SCALE_BITS));
+    }
 
+    // fc_1: 30 -> 32 (weights stored row-major with padded stride FC1_PAD).
     uint8_t a1[FC1_OUT];
     for (int o = 0; o < FC1_OUT; ++o) {
         int32_t s = st.b1[o];
@@ -792,7 +800,8 @@ NNUE_STACK_ALIGN Value network_forward_v4(const int16_t* acc_stm,
         f0[FC0_OUT - 1] * (600 * V4_OUTPUT_SCALE) / (127 * (1 << WEIGHT_SCALE_BITS));
     const int32_t positional = s2 + fwdOut;
 
-    return Value((psqt + positional) / V4_FV_SCALE);
+    // (materialist + positional) -> SF-reported centipawns.
+    return Value(int64_t(psqt + positional) * 100 / (V4_OUTPUT_SCALE * V4_NORMALIZE));
 }
 
 // Rebuild one perspective (accumulator + PSQT sums) from scratch. ALL pieces,
