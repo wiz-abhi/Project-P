@@ -203,6 +203,15 @@ inline int orient(Color perspective, Square s) {
     return perspective == WHITE ? int(s) : int(s) ^ 63;
 }
 
+// HalfKP feature index for (perspective, that perspective's king square, a
+// non-king piece `pc` on square `s`). This is the single source of truth shared
+// by the full-refresh path and the incremental path, so the two can never drift.
+//   index = PS_END * orient(king) + PieceSquareIndex[perspective][pc] + orient(s)
+inline int make_index(Color perspective, Square ksq, Piece pc, Square s) {
+    const int koffset = PS_END * orient(perspective, ksq);
+    return koffset + PieceSquareIndex[perspective][pc] + orient(perspective, s);
+}
+
 }  // namespace
 
 // On Windows/MinGW the x64 ABI only guarantees 16-byte stack alignment, but
@@ -323,6 +332,55 @@ NNUE_STACK_ALIGN bool load(const std::string& path) {
 
 bool loaded() { return g_loaded; }
 
+namespace {
+
+// ---------------------------------------------------------------------------
+// network_forward() — the shared 512->32->32->1 inference over two clipped
+// per-perspective accumulators (side-to-move first). Both the full-refresh path
+// and the incremental path funnel through here, so their arithmetic is byte-for-
+// byte identical. `acc_stm` / `acc_nstm` are the raw int accumulator rows for
+// the side to move and the other side respectively.
+// ---------------------------------------------------------------------------
+template <typename Acc>
+inline Value network_forward(const Acc* acc_stm, const Acc* acc_nstm) {
+    // Clipped 512-wide input: side-to-move perspective first.
+    alignas(64) uint8_t input[L0_IN];
+    for (int i = 0; i < kHalfDimensions; ++i)
+        input[i] = static_cast<uint8_t>(clamp127(int(acc_stm[i])));
+    for (int i = 0; i < kHalfDimensions; ++i)
+        input[kHalfDimensions + i] = static_cast<uint8_t>(clamp127(int(acc_nstm[i])));
+
+    // Layer 0 (512 -> 32) + ClippedReLU.
+    alignas(64) uint8_t h0[L0_OUT];
+    for (int o = 0; o < L0_OUT; ++o) {
+        int32_t s = l0_bias[o];
+        const int8_t* w = &l0_weight[static_cast<size_t>(o) * L0_IN];
+        for (int i = 0; i < L0_IN; ++i)
+            s += int(input[i]) * int(w[i]);
+        h0[o] = static_cast<uint8_t>(clamp127(s >> WEIGHT_SCALE_BITS));
+    }
+
+    // Layer 1 (32 -> 32) + ClippedReLU.
+    alignas(64) uint8_t h1[L1_OUT];
+    for (int o = 0; o < L1_OUT; ++o) {
+        int32_t s = l1_bias[o];
+        const int8_t* w = &l1_weight[static_cast<size_t>(o) * L1_IN];
+        for (int i = 0; i < L1_IN; ++i)
+            s += int(h0[i]) * int(w[i]);
+        h1[o] = static_cast<uint8_t>(clamp127(s >> WEIGHT_SCALE_BITS));
+    }
+
+    // Output (32 -> 1).
+    int32_t s = out_bias[0];
+    for (int i = 0; i < L2_IN; ++i)
+        s += int(h1[i]) * int(out_weight[i]);
+
+    // stm-relative centipawns.
+    return Value(s / FV_SCALE);
+}
+
+}  // namespace
+
 // ---------------------------------------------------------------------------
 // evaluate() — full refresh, scalar inference.
 // ---------------------------------------------------------------------------
@@ -337,15 +395,13 @@ NNUE_STACK_ALIGN Value evaluate(const Position& pos) {
     for (int pc = 0; pc < COLOR_NB; ++pc) {
         const Color perspective = Color(pc);
         const Square ksq = pos.king_square(perspective);
-        const int koffset = PS_END * orient(perspective, ksq);
 
         // Iterate every non-king piece on the board.
         Bitboard occ = pos.pieces() ^ pos.pieces(KING);
         while (occ) {
             Square s   = pop_lsb(occ);
             Piece  pic = pos.piece_on(s);
-            int    base = PieceSquareIndex[perspective][pic];
-            int    findex = koffset + base + orient(perspective, s);
+            int    findex = make_index(perspective, ksq, pic, s);
 
             const int16_t* w = &ft_weight[static_cast<size_t>(findex) * kHalfDimensions];
             for (int i = 0; i < kHalfDimensions; ++i)
@@ -353,42 +409,205 @@ NNUE_STACK_ALIGN Value evaluate(const Position& pos) {
         }
     }
 
-    // 2) Clipped 512-wide input: side-to-move perspective first.
     const Color stm = pos.side_to_move();
-    const Color nstm = ~stm;
-    alignas(64) uint8_t input[L0_IN];
-    for (int i = 0; i < kHalfDimensions; ++i)
-        input[i] = static_cast<uint8_t>(clamp127(acc[stm][i]));
-    for (int i = 0; i < kHalfDimensions; ++i)
-        input[kHalfDimensions + i] = static_cast<uint8_t>(clamp127(acc[nstm][i]));
+    return network_forward<int32_t>(acc[stm], acc[~stm]);
+}
 
-    // 3) Layer 0 (512 -> 32) + ClippedReLU.
-    alignas(64) uint8_t h0[L0_OUT];
-    for (int o = 0; o < L0_OUT; ++o) {
-        int32_t s = l0_bias[o];
-        const int8_t* w = &l0_weight[static_cast<size_t>(o) * L0_IN];
-        for (int i = 0; i < L0_IN; ++i)
-            s += int(input[i]) * int(w[i]);
-        h0[o] = static_cast<uint8_t>(clamp127(s >> WEIGHT_SCALE_BITS));
+// ---------------------------------------------------------------------------
+// refresh_perspective() — recompute one perspective's accumulator from scratch.
+// ---------------------------------------------------------------------------
+NNUE_STACK_ALIGN void refresh_perspective(Accumulator& a, const Position& pos, Color c) {
+    // int32 working sum, then narrowed back to int16 (values fit comfortably —
+    // this matches the full-refresh path, which also sums into int32).
+    alignas(64) int32_t sum[kHalfDimensions];
+    for (int i = 0; i < kHalfDimensions; ++i)
+        sum[i] = ft_bias[i];
+
+    const Square ksq = pos.king_square(c);
+    Bitboard occ = pos.pieces() ^ pos.pieces(KING);
+    while (occ) {
+        Square s   = pop_lsb(occ);
+        Piece  pic = pos.piece_on(s);
+        int    findex = make_index(c, ksq, pic, s);
+        const int16_t* w = &ft_weight[static_cast<size_t>(findex) * kHalfDimensions];
+        for (int i = 0; i < kHalfDimensions; ++i)
+            sum[i] += w[i];
     }
 
-    // 4) Layer 1 (32 -> 32) + ClippedReLU.
-    alignas(64) uint8_t h1[L1_OUT];
-    for (int o = 0; o < L1_OUT; ++o) {
-        int32_t s = l1_bias[o];
-        const int8_t* w = &l1_weight[static_cast<size_t>(o) * L1_IN];
-        for (int i = 0; i < L1_IN; ++i)
-            s += int(h0[i]) * int(w[i]);
-        h1[o] = static_cast<uint8_t>(clamp127(s >> WEIGHT_SCALE_BITS));
+    for (int i = 0; i < kHalfDimensions; ++i)
+        a.acc[c][i] = static_cast<int16_t>(sum[i]);
+    a.computed[c] = true;
+}
+
+void refresh(Accumulator& a, const Position& pos) {
+    refresh_perspective(a, pos, WHITE);
+    refresh_perspective(a, pos, BLACK);
+}
+
+// ---------------------------------------------------------------------------
+// evaluate(Accumulator, stm) — inference over an already-built accumulator.
+// ---------------------------------------------------------------------------
+NNUE_STACK_ALIGN Value evaluate(const Accumulator& a, Color stm) {
+    return network_forward<int16_t>(a.acc[stm], a.acc[~stm]);
+}
+
+// ---------------------------------------------------------------------------
+// update() — derive `child` from `parent` by applying one move.
+//
+// MUST be called on the PRE-MOVE position `before` (its board still reflects the
+// pre-move placement), typically immediately before pos.do_move(m). All feature
+// squares/pieces are read from `before`.
+//
+// For each perspective we add the weight rows of newly-appearing features and
+// subtract the rows of departing features. When a perspective's OWN king moves
+// (normal king move OR castling) that perspective is instead refreshed from
+// scratch, because every one of its features is keyed on its own king square;
+// the king's destination square is derived here (no post-move position needed).
+// ---------------------------------------------------------------------------
+NNUE_STACK_ALIGN void update(Accumulator& child, const Accumulator& parent,
+                             const Position& before, Move m) {
+    const Color us    = before.side_to_move();
+    const Color them  = ~us;
+    const Square from = m.from_sq();
+    const Square to   = m.to_sq();
+    const MoveType mt = m.type_of();
+    const Piece moved = before.piece_on(from);
+    const bool  kingMove = (type_of(moved) == KING);  // includes castling (king from/to)
+
+    // King's destination (for the moving side's refresh). For castling the king
+    // lands on the relative g1/c1 square (this engine encodes `to` == king dest,
+    // and for standard chess that already equals g1/c1, but derive it explicitly
+    // to be safe against the raw encoding).
+    const Square kto =
+        (mt == CASTLING) ? relative_square(us, (to > from) ? SQ_G1 : SQ_C1) : to;
+
+    // Captured piece + square (mirrors position.cpp exactly).
+    Piece capturedPc = NO_PIECE;
+    Square capsq = to;
+    if (mt == EN_PASSANT) {
+        capturedPc = make_piece(them, PAWN);
+        capsq = to - (us == WHITE ? NORTH : SOUTH);
+    } else if (mt != CASTLING) {
+        Piece onTo = before.piece_on(to);
+        if (onTo != NO_PIECE) {          // normal capture (own-piece capture never generated)
+            capturedPc = onTo;
+            capsq = to;
+        }
     }
 
-    // 5) Output (32 -> 1).
-    int32_t s = out_bias[0];
-    for (int i = 0; i < L2_IN; ++i)
-        s += int(h1[i]) * int(out_weight[i]);
+    // The piece that ends up on `to` (promotion changes the piece type there).
+    const Piece placed =
+        (mt == PROMOTION) ? make_piece(us, m.promotion_type()) : moved;
 
-    // stm-relative centipawns.
-    return Value(s / FV_SCALE);
+    // Process each perspective independently.
+    for (int pc = 0; pc < COLOR_NB; ++pc) {
+        const Color P = Color(pc);
+
+        // If side P's own king moved (normal king move OR castling), P's whole
+        // accumulator must be rebuilt against the new king square `kto`.
+        if (kingMove && P == us) {
+            // Rebuild from `before`'s board but with P's king relocated to `kto`
+            // (and, for castling, the rook relocated too — but that is P's own
+            // rook, whose feature is included in the loop below with the new
+            // king). Simplest correct approach: enumerate `before`'s pieces,
+            // apply the move's piece relocations on the fly.
+            alignas(64) int32_t sum[kHalfDimensions];
+            for (int i = 0; i < kHalfDimensions; ++i)
+                sum[i] = ft_bias[i];
+
+            const Square ksqNew = kto;  // P == us, king moved to kto
+
+            // Castling rook relocation (own rook of the moving side).
+            Square rfrom = SQ_NONE, rto = SQ_NONE;
+            if (mt == CASTLING) {
+                const bool kingSide = to > from;
+                rfrom = kingSide ? relative_square(us, SQ_H1)
+                                 : relative_square(us, SQ_A1);
+                rto   = relative_square(us, kingSide ? SQ_F1 : SQ_D1);
+            }
+
+            Bitboard occ = before.pieces() ^ before.pieces(KING);
+            while (occ) {
+                Square s   = pop_lsb(occ);
+                Piece  pic = before.piece_on(s);
+
+                // Skip a captured piece that will vanish (king can capture).
+                if (capturedPc != NO_PIECE && s == capsq)
+                    continue;
+
+                // Relocate the castling rook from rfrom to rto.
+                if (mt == CASTLING && s == rfrom)
+                    s = rto;
+
+                int findex = make_index(P, ksqNew, pic, s);
+                const int16_t* w =
+                    &ft_weight[static_cast<size_t>(findex) * kHalfDimensions];
+                for (int i = 0; i < kHalfDimensions; ++i)
+                    sum[i] += w[i];
+            }
+
+            for (int i = 0; i < kHalfDimensions; ++i)
+                child.acc[P][i] = static_cast<int16_t>(sum[i]);
+            child.computed[P] = true;
+            continue;
+        }
+
+        // Otherwise start from the parent and apply feature deltas. King squares
+        // for perspective P are unchanged here, so read P's king from `before`.
+        const Square ksq = before.king_square(P);
+
+        // Collect up to 3 subtractions and up to 2 additions.
+        int subIdx[3];
+        int addIdx[2];
+        int nSub = 0, nAdd = 0;
+
+        if (mt == CASTLING) {
+            // The castling side is `us`; since P != us here (us was handled by
+            // the king-move refresh above), P is the OTHER side and sees only the
+            // rook relocation as a feature change (the enemy king is not a
+            // feature). Derive rook from/to from the king from/to.
+            const bool kingSide = to > from;
+            const Square rfrom = kingSide ? relative_square(us, SQ_H1)
+                                          : relative_square(us, SQ_A1);
+            const Square rto   = relative_square(us, kingSide ? SQ_F1 : SQ_D1);
+            const Piece rook   = make_piece(us, ROOK);
+            subIdx[nSub++] = make_index(P, ksq, rook, rfrom);
+            addIdx[nAdd++] = make_index(P, ksq, rook, rto);
+        } else {
+            // Moved piece relocation. KINGS ARE NOT FEATURES, so if the moving
+            // piece is a king (a king move by `us`, seen here from the OTHER
+            // perspective P), the relocation contributes no feature delta — only
+            // a capture (handled below) matters to P. For non-king movers, add
+            // the moved piece's from/to delta (promotion swaps the piece kind on
+            // arrival).
+            if (!kingMove) {
+                subIdx[nSub++] = make_index(P, ksq, moved, from);
+                addIdx[nAdd++] = make_index(P, ksq, placed, to);
+            }
+
+            // Captured piece disappears from capsq (applies to king captures too).
+            if (capturedPc != NO_PIECE)
+                subIdx[nSub++] = make_index(P, ksq, capturedPc, capsq);
+        }
+
+        // Apply: child = parent - Σ sub + Σ add, per neuron.
+        const int16_t* wsub[3];
+        const int16_t* wadd[2];
+        for (int k = 0; k < nSub; ++k)
+            wsub[k] = &ft_weight[static_cast<size_t>(subIdx[k]) * kHalfDimensions];
+        for (int k = 0; k < nAdd; ++k)
+            wadd[k] = &ft_weight[static_cast<size_t>(addIdx[k]) * kHalfDimensions];
+
+        const int16_t* src = parent.acc[P];
+        int16_t*       dst = child.acc[P];
+        for (int i = 0; i < kHalfDimensions; ++i) {
+            int v = int(src[i]);
+            for (int k = 0; k < nSub; ++k) v -= int(wsub[k][i]);
+            for (int k = 0; k < nAdd; ++k) v += int(wadd[k][i]);
+            dst[i] = static_cast<int16_t>(v);
+        }
+        child.computed[P] = true;
+    }
 }
 
 }  // namespace NNUE

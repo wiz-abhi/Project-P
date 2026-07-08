@@ -40,12 +40,17 @@
 
 #include "eval.hpp"
 #include "movegen.hpp"
+#include "nnue.hpp"
 #include "position.hpp"
 #include "tt.hpp"
 #include "types.hpp"
 #include "uci.hpp"
 
 namespace engine {
+
+// "Use NNUE" toggle (defined in eval.cpp). When true and a net is loaded, the
+// search uses its incrementally-updated accumulator stack for static eval.
+extern bool UseNNUE;
 
 // Move Overhead (ms) shared with the UCI option handler; TimeManager subtracts it.
 extern int MoveOverheadMs;
@@ -261,6 +266,25 @@ struct Thread {
     // StateInfo pool used during search, one per ply.
     StateInfo states[MAX_PLY + 4];
 
+    // Incrementally-updated NNUE accumulator stack, one slot per ply. accStack[0]
+    // is refreshed from the root; each child slot is derived from its parent via
+    // NNUE::update just before the corresponding do_move (see search/qsearch).
+    // qsearch may descend to MAX_PLY, so keep a little slack.
+    NNUE::Accumulator accStack[MAX_PLY + 5];
+
+    // Whether the incremental NNUE path is active for this search (net loaded and
+    // the UCI "Use NNUE" option enabled). Cached at new_search() time.
+    bool nnueActive = false;
+
+    // Static evaluation at `ply`, using the incremental accumulator when active,
+    // otherwise the hand-crafted / full-refresh path. Assumes accStack[ply] is
+    // valid (it is on entry to every node once the root is refreshed).
+    Value eval_at(int ply) {
+        if (nnueActive)
+            return NNUE::evaluate(accStack[ply], pos.side_to_move());
+        return Eval::evaluate(pos);
+    }
+
     // Per-ply stack info threaded through the recursion. ssStore has one extra
     // leading element so ss[-1] (read for the countermove / null-move guard at
     // ply 0) addresses a valid, zero-initialised sentinel rather than UB.
@@ -303,6 +327,7 @@ struct Thread {
         bestMove = Move::none();
         bestValue = VALUE_ZERO;
         completedDepth = 0;
+        nnueActive = UseNNUE && NNUE::loaded();
         std::memset(killers, 0, sizeof(killers));
         // Reset the sentinel (ss[-1]) plus every real ply slot.
         ss[-1].currentMove = Move::none();
@@ -398,7 +423,7 @@ Value Thread::qsearch(Value alpha, Value beta, int ply) {
         return VALUE_DRAW;
 
     if (ply >= MAX_PLY)
-        return Eval::evaluate(pos);
+        return eval_at(ply);
 
     const bool inCheck = pos.checkers();
     Value bestValue;
@@ -406,7 +431,7 @@ Value Thread::qsearch(Value alpha, Value beta, int ply) {
     if (inCheck) {
         bestValue = -VALUE_INFINITE;  // must find an evasion
     } else {
-        bestValue = Eval::evaluate(pos);
+        bestValue = eval_at(ply);
         if (bestValue >= beta)
             return bestValue;
         if (bestValue > alpha)
@@ -432,6 +457,8 @@ Value Thread::qsearch(Value alpha, Value beta, int ply) {
 
         for (int i = 0; i < n; ++i) {
             Move m = ordered[i].move;
+            if (nnueActive)
+                NNUE::update(accStack[ply + 1], accStack[ply], pos, m);
             pos.do_move(m, states[ply]);
             Value v = -qsearch(-beta, -alpha, ply + 1);
             pos.undo_move(m);
@@ -479,6 +506,8 @@ Value Thread::qsearch(Value alpha, Value beta, int ply) {
         if (!pos.see_ge(m, -100))
             continue;
 
+        if (nnueActive)
+            NNUE::update(accStack[ply + 1], accStack[ply], pos, m);
         pos.do_move(m, states[ply]);
         Value v = -qsearch(-beta, -alpha, ply + 1);
         pos.undo_move(m);
@@ -520,7 +549,7 @@ Value Thread::search(Value alpha, Value beta, int depth, int ply, bool cutNode) 
         if (pos.is_draw(ply))
             return VALUE_DRAW;
         if (ply >= MAX_PLY)
-            return Eval::evaluate(pos);
+            return eval_at(ply);
 
         // Mate-distance pruning: bound the window by the best/worst possible mate.
         alpha = std::max(mated_in(ply), alpha);
@@ -558,7 +587,7 @@ Value Thread::search(Value alpha, Value beta, int depth, int ply, bool cutNode) 
             (ttBound & (ttValue > eval ? BOUND_LOWER : BOUND_UPPER)))
             eval = ttValue;
     } else {
-        staticEval = eval = Eval::evaluate(pos);
+        staticEval = eval = eval_at(ply);
     }
 
     ss[ply].staticEval = staticEval;
@@ -589,6 +618,12 @@ Value Thread::search(Value alpha, Value beta, int depth, int ply, bool cutNode) 
             int R = 3 + depth / 3 + std::min((eval - beta) / 200, 3);
             ss[ply].currentMove = Move::null();
             ss[ply].movedPiece  = NO_PIECE;
+
+            // Null move: board unchanged, so the child accumulator equals the
+            // parent's (feature indices depend only on king squares + pieces,
+            // not on side-to-move). Copy it forward.
+            if (nnueActive)
+                accStack[ply + 1] = accStack[ply];
 
             pos.do_null_move(states[ply]);
             Value nullValue =
@@ -724,6 +759,10 @@ Value Thread::search(Value alpha, Value beta, int depth, int ply, bool cutNode) 
         int extension = (givesCheck) ? 1 : 0;
         int newDepth  = depth - 1 + extension;
 
+        // Derive the child accumulator from the parent + this move (on the
+        // pre-move board), then make the move.
+        if (nnueActive)
+            NNUE::update(accStack[ply + 1], accStack[ply], pos, m);
         pos.do_move(m, states[ply], givesCheck);
 
         Value v = -VALUE_INFINITE;
@@ -855,6 +894,11 @@ Value Thread::search(Value alpha, Value beta, int depth, int ply, bool cutNode) 
 void iterative_deepening(Thread& th) {
     const int maxDepth = Limits.depth > 0 ? std::min(Limits.depth, MAX_PLY - 1)
                                           : MAX_PLY - 1;
+
+    // Seed the root accumulator once (the root position is fixed for the whole
+    // search); every node then derives its accumulator incrementally.
+    if (th.nnueActive)
+        NNUE::refresh(th.accStack[0], th.pos);
 
     Move  bestMove  = Move::none();
     Value bestValue = VALUE_ZERO;
