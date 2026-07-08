@@ -58,6 +58,7 @@ extern int MoveOverheadMs;
 namespace Search {
 
 std::atomic<bool> stop{false};
+std::atomic<bool> pondering{false};   // true while searching under "go ponder"
 Stats             stats;   // aggregate (summed) stats for UCI reporting
 
 // Number of search threads (Lazy SMP workers). Set by the UCI "Threads" option
@@ -103,25 +104,68 @@ int64_t now_ms() {
 
 }  // namespace
 
-void TimeManager::start() { startTime = now_ms(); }
+void TimeManager::start() {
+    startTime.store(now_ms(), std::memory_order_release);
+}
 
-int64_t TimeManager::elapsed() const { return now_ms() - startTime; }
+int64_t TimeManager::elapsed() const {
+    return now_ms() - startTime.load(std::memory_order_acquire);
+}
 
-void TimeManager::init(const SearchLimits& limits, Color us, int /*ply*/) {
+void TimeManager::init(const SearchLimits& limits, Color us, int ply) {
     start();
+
+    // Remember what we were asked for so a later ponderhit can re-derive the
+    // budget from the same clock parameters (measured from the ponderhit instant).
+    savedLimits = limits;
+    savedUs     = us;
+    savedPly    = ply;
+
+    compute_budget();
+}
+
+void TimeManager::restart() {
+    // Reset the clock origin to NOW, then recompute the budget from the stored
+    // limits. Called on ponderhit(); the running search sees a fresh clock.
+    start();
+    compute_budget();
+}
+
+void TimeManager::compute_budget() {
+    const SearchLimits& limits = savedLimits;
+    const Color         us     = savedUs;
+
+    // Publish the budget with the right ordering: write optimum first, then
+    // maximum with release, because search-thread readers gate on maximum()
+    // (acquire). A reader that sees a freshly-finite maximum is then guaranteed to
+    // also see the matching optimum and the startTime that start() released just
+    // before — so a ponderhit transition can never produce a stale early stop.
+    auto publish = [this](int64_t opt, int64_t mx) {
+        optimumMs.store(opt, std::memory_order_relaxed);
+        maximumMs.store(mx, std::memory_order_release);
+    };
+
+    // While pondering, the clock does not run: search unbounded (like "infinite").
+    // ponderhit() clears Search::pondering and calls restart() to recompute a real
+    // budget from this same point.
+    if (Search::pondering.load(std::memory_order_relaxed)) {
+        publish(INT64_MAX / 4, INT64_MAX / 4);
+        return;
+    }
 
     const int64_t overhead = MoveOverheadMs;
 
     // Fixed / unlimited modes: rely on depth/node/stop rather than the clock.
     if (limits.movetime > 0) {
-        optimumMs = maximumMs = std::max<int64_t>(1, limits.movetime - overhead);
+        int64_t mt = std::max<int64_t>(1, limits.movetime - overhead);
+        publish(mt, mt);
         return;
     }
     if (limits.depth > 0 || limits.nodes > 0 || limits.infinite ||
         (limits.time[us] == 0 && limits.inc[us] == 0)) {
         // No usable clock info -> effectively unlimited (a depth/node/stop
         // limit is expected to terminate the search).
-        optimumMs = maximumMs = INT64_MAX / 4;
+        publish(INT64_MAX / 4, INT64_MAX / 4);
         return;
     }
 
@@ -157,8 +201,7 @@ void TimeManager::init(const SearchLimits& limits, Color us, int /*ply*/) {
     opt = std::clamp<int64_t>(opt, 1, remaining);
     mx  = std::clamp<int64_t>(mx, opt, remaining);
 
-    optimumMs = opt;
-    maximumMs = mx;
+    publish(opt, mx);
 }
 
 // ---------------------------------------------------------------------------
@@ -298,6 +341,7 @@ struct Thread {
 
     // Best result produced by this thread's iterative deepening.
     Move  bestMove    = Move::none();
+    Move  ponderMove  = Move::none();   // 2nd PV move of the last completed depth
     Value bestValue   = VALUE_ZERO;
     int   completedDepth = 0;
 
@@ -325,6 +369,7 @@ struct Thread {
         seldepth = 0;
         stopped  = false;
         bestMove = Move::none();
+        ponderMove = Move::none();
         bestValue = VALUE_ZERO;
         completedDepth = 0;
         nnueActive = UseNNUE && NNUE::loaded();
@@ -358,6 +403,10 @@ struct Thread {
             return;
         }
         if (!isMain())
+            return;
+        // While pondering the clock/node budget is not in force; only an explicit
+        // global stop (handled above) or a ponderhit (clears pondering) ends it.
+        if (pondering.load(std::memory_order_relaxed))
             return;
         if (Limits.nodes > 0 && total_nodes_estimate() >= Limits.nodes) {
             stopped = true;
@@ -963,6 +1012,13 @@ void iterative_deepening(Thread& th) {
         th.bestMove       = bestMove;
         th.bestValue      = bestValue;
         th.completedDepth = depth;
+        // Capture the ponder move (2nd PV move) from THIS completed iteration, so
+        // it stays consistent with bestMove even if a later iteration is aborted
+        // mid-flight (which can leave pvTable[0] partly overwritten).
+        th.ponderMove =
+            (th.pvLength[0] >= 2 && th.pvTable[0][0] == bestMove)
+                ? th.pvTable[0][1]
+                : Move::none();
 
         // Only the main thread reports and manages the clock.
         if (th.isMain()) {
@@ -979,6 +1035,27 @@ void iterative_deepening(Thread& th) {
                       << " pv " << th.pv_string()
                       << std::endl;
 
+            // While pondering the clock is not running and we must not emit a
+            // bestmove: never terminate on time / mate / node budget. If the
+            // position is already solved (a mate found, or we would run out of
+            // depth), idle here until the GUI sends ponderhit (clears pondering)
+            // or stop (sets the global stop flag) rather than falling out of the
+            // loop and printing bestmove prematurely.
+            if (pondering.load(std::memory_order_relaxed)) {
+                bool solved = std::abs(v) >= VALUE_MATE_IN_MAX_PLY ||
+                              (Limits.nodes > 0 && totalNodes >= Limits.nodes) ||
+                              depth >= maxDepth;
+                if (solved) {
+                    while (pondering.load(std::memory_order_relaxed) &&
+                           !stop.load(std::memory_order_relaxed))
+                        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+                // If ponderhit arrived we fall through to keep deepening under the
+                // now-live clock; if stop arrived the next iteration's search will
+                // observe it and return. Either way, do not stop here.
+                continue;
+            }
+
             // Stop if we found a forced mate or exhausted the optimum time budget.
             if (Time.maximum() < INT64_MAX / 4 && Time.elapsed() >= Time.optimum()) {
                 stop.store(true, std::memory_order_relaxed);
@@ -993,8 +1070,12 @@ void iterative_deepening(Thread& th) {
                 break;
             }
         } else {
-            // Helper threads still honour a mate find / global stop.
-            if (std::abs(v) >= VALUE_MATE_IN_MAX_PLY)
+            // Helper threads still honour a mate find / global stop. Do not break
+            // on a mate find while pondering (that would let a helper exit and,
+            // once the pool joins on stop, is harmless — but keep them alive so
+            // they keep sharing TT until pondering ends or stop is set).
+            if (!pondering.load(std::memory_order_relaxed) &&
+                std::abs(v) >= VALUE_MATE_IN_MAX_PLY)
                 break;
             if (stop.load(std::memory_order_relaxed))
                 break;
@@ -1023,6 +1104,23 @@ void clear() {
     // search; nothing global to clear here beyond the shared TT.
 }
 
+// Transition from a "go ponder" search to a normal timed search. The GUI calls
+// this (via the UCI "ponderhit" command) when the opponent actually played the
+// move we were pondering on. We do NOT relaunch the search — the same worker
+// thread(s) keep running — we simply:
+//   1. clear the pondering flag (so check_time / the ID loop honour the clock),
+//   2. reset the clock origin to NOW and recompute the budget from the wtime/
+//      btime/winc/binc the "go ponder" carried (so time is measured from here).
+// If no ponder search is in flight this is a harmless no-op.
+void ponderhit() {
+    if (!pondering.load(std::memory_order_relaxed))
+        return;
+    pondering.store(false, std::memory_order_relaxed);
+    // Recompute optimum/maximum with pondering now false → a real timed budget,
+    // measured from this instant.
+    Time.restart();
+}
+
 Move think(Position& pos, const SearchLimits& limits) {
     Limits    = limits;
     rootColor = pos.side_to_move();
@@ -1033,6 +1131,9 @@ Move think(Position& pos, const SearchLimits& limits) {
         rootInfo.fen = pos.fen();
 
     stop.store(false, std::memory_order_relaxed);
+    // Establish the pondering state from the launch command BEFORE Time.init(),
+    // which consults it to decide between an infinite (ponder) and a real budget.
+    pondering.store(limits.ponder, std::memory_order_relaxed);
     stats.nodes    = 0;
     stats.seldepth = 0;
 
@@ -1089,14 +1190,29 @@ Move think(Position& pos, const SearchLimits& limits) {
 
     Move bestMove = best->bestMove;
 
+    // Ponder move: the 2nd move of the chosen line's principal variation — the
+    // reply we expect, so the GUI can ponder on it next. Taken from the last
+    // COMPLETED iteration (captured in th.ponderMove) so it stays consistent with
+    // bestMove even when the final iteration was aborted mid-flight.
+    Move ponderMove = (best->bestMove != Move::none()) ? best->ponderMove
+                                                       : Move::none();
+
     if (bestMove == Move::none()) {
         // Fallback: pick any legal move so we never emit an illegal bestmove.
         MoveList<LEGAL> moves(pos);
         if (moves.size() > 0)
             bestMove = moves.begin()->move;
+        ponderMove = Move::none();  // no reliable PV behind a fallback move
     }
 
-    std::cout << "bestmove " << move_to_uci(bestMove) << std::endl;
+    std::cout << "bestmove " << move_to_uci(bestMove);
+    if (ponderMove != Move::none())
+        std::cout << " ponder " << move_to_uci(ponderMove);
+    std::cout << std::endl;
+
+    // Clear the pondering flag now the search is fully done, so it never leaks
+    // into a subsequent non-ponder "go" (defensive; the UCI layer also resets it).
+    pondering.store(false, std::memory_order_relaxed);
 
     // Free per-thread state (large tables) once the move is chosen.
     Workers.clear();

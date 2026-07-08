@@ -11,7 +11,7 @@ engine:
   working_dir: "/home/user/engine"     # so relative nets/ and book paths resolve
   name: "engine"                       # the binary produced by `make` (bin/engine)
   protocol: "uci"
-  ponder: false                        # no pondering (fair + simpler for bullet)
+  ponder: true                         # think on the opponent's clock (UCI go ponder/ponderhit); a real bullet-rating win
 
   uci_options:
     Threads: 3                         # runner has ~4 vCPU; 3 for the engine, 1 for bridge/OS (more depth in bullet)

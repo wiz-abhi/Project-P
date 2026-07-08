@@ -23,6 +23,7 @@ struct SearchLimits {
     int     inc[COLOR_NB]  = {0, 0};  // winc / binc
     int     movestogo = 0;
     bool    infinite  = false;
+    bool    ponder    = false;        // "go ponder": search now, defer the clock
     std::vector<Move> searchmoves;    // restrict root to these (empty = all)
 };
 
@@ -30,21 +31,54 @@ struct SearchLimits {
 class TimeManager {
    public:
     void init(const SearchLimits& limits, Color us, int ply);
-    int64_t optimum() const { return optimumMs; }
-    int64_t maximum() const { return maximumMs; }
-    int64_t elapsed() const;   // ms since init()
+    // optimum()/maximum() are read on the search thread(s); a concurrent
+    // ponderhit() on the UCI thread rewrites them via restart(). Acquire loads
+    // here pair with the release store at the end of compute_budget() so that a
+    // reader seeing a freshly-finite budget also sees the freshly-reset clock
+    // origin (never a stale startTime → never a spurious early stop).
+    int64_t optimum() const { return optimumMs.load(std::memory_order_acquire); }
+    int64_t maximum() const { return maximumMs.load(std::memory_order_acquire); }
+    int64_t elapsed() const;   // ms since the clock origin
     void    start();
 
+    // Restart the clock at NOW and (re)derive the budget from the limits/color/ply
+    // captured at init() time. Called from Search::ponderhit() to begin the timed
+    // phase the instant the opponent plays the predicted move.
+    void    restart();
+
    private:
-    int64_t startTime = 0;
-    int64_t optimumMs = 0;
-    int64_t maximumMs = 0;
+    // Compute optimum/maximum from the stored limits + us + ply, assuming the
+    // clock origin (startTime) is already set. Shared by init() and restart().
+    void    compute_budget();
+
+    std::atomic<int64_t> startTime{0};
+    std::atomic<int64_t> optimumMs{0};
+    std::atomic<int64_t> maximumMs{0};
+
+    // Snapshot of the parameters init() was called with, so restart() can recompute
+    // the budget from the same wtime/btime/winc/binc after a ponderhit.
+    SearchLimits savedLimits;
+    Color        savedUs  = WHITE;
+    int          savedPly = 0;
 };
 
 namespace Search {
 
 // Global stop flag: set by the UCI "stop"/"quit" handler or by the time manager.
 extern std::atomic<bool> stop;
+
+// Pondering flag: set when a search was launched with "go ponder". While true the
+// search ignores the clock (searches like "infinite") and never terminates on the
+// time budget. The UCI "ponderhit" handler flips it false via ponderhit(), which
+// also starts the clock from that instant.
+extern std::atomic<bool> pondering;
+
+// Transition from pondering to a normal timed search: clears the pondering flag,
+// resets the clock origin to NOW, and (re)computes the optimum/maximum time
+// budget from the limits the "go ponder" command carried. The already-running
+// search thread then begins honouring the clock. Safe to call only while a
+// ponder search is in flight.
+void ponderhit();
 
 // Aggregate search statistics for UCI info output.
 struct Stats {

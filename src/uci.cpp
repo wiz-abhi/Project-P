@@ -261,18 +261,6 @@ void set_position(std::istringstream& is) {
 void go(std::istringstream& is) {
     join_search();
 
-    // Opening book: if enabled and the current position is in the book, play a
-    // book move immediately and skip the search.
-    if (ownBook && book().loaded()) {
-        Move bm = book().probe(rootPos, /*pickBest=*/false);
-        if (bm != Move::none()) {
-            std::string uci = move_to_uci(bm);
-            std::cout << "info depth 0 score cp 0 pv " << uci << "\n"
-                      << "bestmove " << uci << std::endl;
-            return;
-        }
-    }
-
     SearchLimits limits;
     std::string  token;
 
@@ -283,7 +271,8 @@ void go(std::istringstream& is) {
                 if (m != Move::none())
                     limits.searchmoves.push_back(m);
             }
-        } else if (token == "wtime")     is >> limits.time[WHITE];
+        } else if (token == "ponder")    limits.ponder = true;
+        else if (token == "wtime")       is >> limits.time[WHITE];
         else if (token == "btime")       is >> limits.time[BLACK];
         else if (token == "winc")        is >> limits.inc[WHITE];
         else if (token == "binc")        is >> limits.inc[BLACK];
@@ -292,6 +281,20 @@ void go(std::istringstream& is) {
         else if (token == "nodes")       is >> limits.nodes;
         else if (token == "movetime")    is >> limits.movetime;
         else if (token == "infinite")    limits.infinite = true;
+    }
+
+    // Opening book: if enabled and the current position is in the book, play a
+    // book move immediately and skip the search. Never short-circuit a "go
+    // ponder": pondering must actually search (on the opponent's clock) and must
+    // not emit a bestmove until ponderhit/stop.
+    if (!limits.ponder && ownBook && book().loaded()) {
+        Move bm = book().probe(rootPos, /*pickBest=*/false);
+        if (bm != Move::none()) {
+            std::string uci = move_to_uci(bm);
+            std::cout << "info depth 0 score cp 0 pv " << uci << "\n"
+                      << "bestmove " << uci << std::endl;
+            return;
+        }
     }
 
     Search::stop = false;
@@ -368,6 +371,11 @@ void uci_loop_stdin() {
             set_position(is);
         } else if (token == "go") {
             go(is);
+        } else if (token == "ponderhit") {
+            // Opponent played the move we were pondering: hand the running search
+            // its live clock. Do NOT join/relaunch — the same thread keeps going
+            // and prints bestmove when the (now-started) time budget is spent.
+            Search::ponderhit();
         } else if (token == "stop") {
             Search::stop = true;
             join_search();
