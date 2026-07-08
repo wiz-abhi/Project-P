@@ -301,11 +301,15 @@ void init() {
         }
     }
 
-    // Attempt to load the HalfKP NNUE network. Try the repo-relative path first,
-    // then an absolute fallback. Failure is non-fatal: evaluate() falls back to
-    // the hand-crafted evaluation above.
-    if (!NNUE::load("nets/nn-halfkp.nnue"))
-        NNUE::load("C:/Users/abhis/Desktop/OSS/Client/nets/nn-halfkp.nnue");
+    // Attempt to load an NNUE network: the modern HalfKAv2_hm/SFNNv4 net first,
+    // then the classic HalfKP net. Try repo-relative paths first, then absolute
+    // fallbacks. Failure is non-fatal: evaluate() falls back to the hand-crafted
+    // evaluation above. (NNUE::load itself also falls back to the HalfKP net if
+    // a requested file fails to parse, so the engine is never netless.)
+    if (!NNUE::load("nets/nn-ad9b42354671.nnue"))
+        if (!NNUE::load("C:/Users/abhis/Desktop/OSS/Client/nets/nn-ad9b42354671.nnue"))
+            if (!NNUE::load("nets/nn-halfkp.nnue"))
+                NNUE::load("C:/Users/abhis/Desktop/OSS/Client/nets/nn-halfkp.nnue");
 }
 
 namespace {

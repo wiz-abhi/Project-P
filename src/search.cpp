@@ -324,7 +324,7 @@ struct Thread {
     // valid (it is on entry to every node once the root is refreshed).
     Value eval_at(int ply) {
         if (nnueActive)
-            return NNUE::evaluate(accStack[ply], pos.side_to_move());
+            return NNUE::evaluate(accStack[ply], pos);
         return Eval::evaluate(pos);
     }
 

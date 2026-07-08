@@ -18,7 +18,7 @@ engine:
     Hash: 256                          # MB
     Move Overhead: 400                 # ms; KEEP high for bullet — latency flag-safety outweighs the clock cost
     Use NNUE: true
-    EvalFile: "nets/nn-halfkp.nnue"    # relative to working_dir
+    EvalFile: "nets/nn-ad9b42354671.nnue"  # HalfKAv2_hm/SFNNv4 (modern); engine falls back to nets/nn-halfkp.nnue if missing
     OwnBook: true                      # engine plays Polyglot book moves in the opening
     BookFile: "book/komodo.bin"        # relative to working_dir (downloaded by the workflow)
 

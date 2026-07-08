@@ -14,8 +14,13 @@ WORKDIR /app/engine
 COPY . /app/engine
 RUN make && ./bin/engine perft | tail -1        # self-test: must print ALL POSITIONS PASS
 
-# --- Bake in the NNUE net + opening book (git-ignored, so fetched here) ---
+# --- Bake in the NNUE nets + opening book (git-ignored, so fetched here) ---
+# Primary net: nn-ad9b42354671.nnue (HalfKAv2_hm / SFNNv4, SF15-era, 47 MB).
+# Fallback net: nn-62ef826d1a6d.nnue (classic HalfKP / SFNNv1, 21 MB) — the
+# engine auto-falls back to it if the primary net is missing or unparsable.
 RUN mkdir -p nets book \
+ && curl -L --fail --retry 3 -o nets/nn-ad9b42354671.nnue \
+      "https://tests.stockfishchess.org/api/nn/nn-ad9b42354671.nnue" \
  && curl -L --fail --retry 3 -o nets/nn-halfkp.nnue \
       "https://tests.stockfishchess.org/api/nn/nn-62ef826d1a6d.nnue" \
  && curl -L --fail --retry 3 -o book/komodo.bin \
