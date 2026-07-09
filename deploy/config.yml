@@ -44,10 +44,16 @@ matchmaking:
   challenge_initial_time: 60           # 1+1 bullet — increment refills the per-move latency drain
   challenge_increment: 1               # +1s/move: neutralizes runner->Lichess latency (fixed the flag losses)
   challenge_mode: "rated"
-  # Seek strong opponents so wins boost rating fast (client instruction: 2800-3500)
-  opponent_min_rating: 2800
-  opponent_max_rating: 3500
-  opponent_rating_difference: 500
+  # Bias matchmaking UPWARD to climb fast while underrated (post-v4). NOTE: if
+  # opponent_rating_difference is set, lichess-bot IGNORES the min/max band and
+  # seeks symmetric ±diff — which pulled us DOWN to ~2000-rated bots. So it is
+  # intentionally REMOVED here; the absolute band below floors opponents at/above
+  # the bot's own rating (skip weaker bots) with headroom past the 3100 target.
+  # Beating stronger opponents gains more Glicko points; it speeds convergence to
+  # true strength (does NOT exceed it), so this pays off most right after a real
+  # strength upgrade. Floor ~= current rating; raise it as the bot climbs.
+  opponent_min_rating: 2600            # never play below this (near current rating)
+  opponent_max_rating: 3300            # up to well above the 3100 goal
   challenge_timeout: 5                 # minutes idle before seeking a game — low = climb faster
 
 # --- Accept incoming challenges (in-band) ---
