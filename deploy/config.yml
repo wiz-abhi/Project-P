@@ -15,7 +15,7 @@ engine:
   uci_options:
     Threads: 3                         # runner has ~4 vCPU; 3 for the engine, 1 for bridge/OS
     Hash: 256                          # MB
-    Move Overhead: 400                 # ms; KEEP high for bullet — latency flag-safety outweighs the clock cost
+    Move Overhead: 150                 # ms; lowered from 400 — 0 flag losses gave margin to spend on depth (converts draws->wins). Override per-deploy with the MOVE_OVERHEAD env var.
     Use NNUE: true                     # NNUE net is embedded in the binary (nn-ad9b42354671.nnue)
     OwnBook: true                      # Wizard plays Polyglot book moves in the opening (our integration)
     BookFile: "book/komodo.bin"        # relative to working_dir (downloaded by the Dockerfile)
