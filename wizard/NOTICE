@@ -1,0 +1,27 @@
+Wizard — NOTICE / Attribution
+==============================
+
+Wizard is a derivative work of Stockfish 15.1, a UCI chess engine.
+Stockfish is Copyright (C) 2004-2022 The Stockfish developers (see the
+AUTHORS file in the upstream project) and is licensed under the GNU
+General Public License version 3 (GPL-3). As a derivative work, Wizard
+is likewise distributed under GPL-3 (see the license header in each
+source file).
+
+Upstream project : https://github.com/official-stockfish/Stockfish
+Derived from     : Stockfish 15.1
+
+Modifications by the Wizard authors on top of Stockfish 15.1:
+  - Engine identity / branding (UCI `id name` / `id author`).
+  - Integrated Polyglot opening-book support (book probing in the UCI
+    search loop; original book-reader implementation).
+  - Bullet-oriented time-management configuration and latency tuning
+    for online (Lichess) play.
+  - NNUE integration verification tooling and the deployment pipeline
+    (Docker / lichess-bot).
+
+The NNUE evaluation network (nn-ad9b42354671.nnue) is the Stockfish 15.1
+default network, distributed under GPL-3 as part of Stockfish.
+
+Nothing in this notice limits your rights under the GPL-3. You may
+redistribute and/or modify Wizard under the terms of the GPL-3.

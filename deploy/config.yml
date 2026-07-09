@@ -1,60 +1,40 @@
-# lichess-bot configuration for the engine — tuned for BULLET rating climb.
-# See deploy/DEPLOY.md. Reconcile with your installed lichess-bot's
-# config.yml.default if its schema differs; copy the engine/matchmaking/challenge
-# blocks below over the default.
+# lichess-bot configuration for the Wizard engine — tuned for BULLET rating climb.
+# Wizard is a Stockfish-15.1 derivative (GPL-3) with an integrated Polyglot book.
+# Paths are the container layout produced by the Dockerfile (/app/engine/...).
 
-token: "PASTE_YOUR_BOT_TOKEN_HERE"     # Lichess BOT token with bot:play scope
+token: "PASTE_YOUR_BOT_TOKEN_HERE"     # Lichess BOT token with bot:play scope (injected by entrypoint)
 url: "https://lichess.org/"
 
 engine:
-  dir: "/home/user/engine/bin"         # ABSOLUTE path to the folder with the binary
-  working_dir: "/home/user/engine"     # so relative nets/ and book paths resolve
-  name: "engine"                       # the binary produced by `make` (bin/engine)
+  dir: "/app/engine/wizard"            # folder holding the `wizard` binary
+  working_dir: "/app/engine"           # so relative book/ paths resolve
+  name: "wizard"                       # the binary produced by `make` in wizard/
   protocol: "uci"
-  ponder: true                         # think on the opponent's clock (UCI go ponder/ponderhit); a real bullet-rating win
+  ponder: true                         # think on the opponent's clock — a real bullet-rating win
 
   uci_options:
-    Threads: 3                         # runner has ~4 vCPU; 3 for the engine, 1 for bridge/OS (more depth in bullet)
+    Threads: 3                         # runner has ~4 vCPU; 3 for the engine, 1 for bridge/OS
     Hash: 256                          # MB
     Move Overhead: 400                 # ms; KEEP high for bullet — latency flag-safety outweighs the clock cost
-    Use NNUE: true
-    EvalFile: "nets/nn-ad9b42354671.nnue"  # HalfKAv2_hm/SFNNv4 (modern); engine falls back to nets/nn-halfkp.nnue if missing
-    OwnBook: true                      # engine plays Polyglot book moves in the opening
-    BookFile: "book/komodo.bin"        # relative to working_dir (downloaded by the workflow)
-
-  # Optional: cap how long we ever think per move (safety); the engine's own time
-  # manager already handles this from the clock.
-  # go_commands:
-  #   movetime: 0
-
-# Opening book (enable once a Polyglot .bin is added; disabled for now).
-polyglot:
-  enabled: false
-  # book:
-  #   standard:
-  #     - "book/openings.bin"
-  # min_weight: 1
-  # selection: "weighted_random"
+    Use NNUE: true                     # NNUE net is embedded in the binary (nn-ad9b42354671.nnue)
+    OwnBook: true                      # Wizard plays Polyglot book moves in the opening (our integration)
+    BookFile: "book/komodo.bin"        # relative to working_dir (downloaded by the Dockerfile)
+    BookBestMove: false                # weighted-random among good book moves (opening variety)
 
 # --- Seek games actively (drives the rating climb) ---
 matchmaking:
   allow_matchmaking: true
   challenge_variant: "standard"
   challenge_timecontrol: "bullet"      # bullet: engines overperform most (opponents flag/blunder)
-  challenge_initial_time: 60           # 1+1 bullet — increment refills the per-move latency drain
-  challenge_increment: 1               # +1s/move: neutralizes runner->Lichess latency (fixed the flag losses)
+  challenge_initial_time: 60           # 1+1 bullet
+  challenge_increment: 1               # +1s/move: neutralizes runner->Lichess latency
   challenge_mode: "rated"
-  # Bias matchmaking UPWARD to climb fast while underrated (post-v4). NOTE: if
-  # opponent_rating_difference is set, lichess-bot IGNORES the min/max band and
-  # seeks symmetric ±diff — which pulled us DOWN to ~2000-rated bots. So it is
-  # intentionally REMOVED here; the absolute band below floors opponents at/above
-  # the bot's own rating (skip weaker bots) with headroom past the 3100 target.
-  # Beating stronger opponents gains more Glicko points; it speeds convergence to
-  # true strength (does NOT exceed it), so this pays off most right after a real
-  # strength upgrade. Floor ~= current rating; raise it as the bot climbs.
-  opponent_min_rating: 2600            # never play below this (near current rating)
+  # Bias matchmaking UPWARD: floor at/above the bot's own rating (skip weaker bots)
+  # with headroom past the 3100 target. NOTE: opponent_rating_difference is left
+  # UNSET on purpose — setting it makes lichess-bot ignore this band.
+  opponent_min_rating: 2600            # never play below this
   opponent_max_rating: 3300            # up to well above the 3100 goal
-  challenge_timeout: 5                 # minutes idle before seeking a game — low = climb faster
+  challenge_timeout: 5                 # minutes idle before seeking a game
 
 # --- Accept incoming challenges (in-band) ---
 challenge:

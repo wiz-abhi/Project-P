@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Entrypoint for the Railway/Docker deployment: inject the token + container paths
-# into lichess-bot's config, then run it. Token comes from the LICHESS_BOT_TOKEN
-# environment variable (set in Railway → Variables) so it's never baked into the image.
+# Entrypoint for the Railway/Docker deployment of Wizard: inject the Lichess
+# token into lichess-bot's config, then run it. The token comes from the
+# LICHESS_BOT_TOKEN environment variable (set in Railway -> Variables) so it is
+# never baked into the image. Engine paths are already the container layout
+# (/app/engine/...) in deploy/config.yml.
 set -euo pipefail
 
 CFG=/app/lichess-bot/config.yml
@@ -12,18 +14,15 @@ if [ -z "${LICHESS_BOT_TOKEN:-}" ]; then
   exit 1
 fi
 
-# Inject token (GitHub/Railway mask secrets in logs) and rewrite the engine paths
-# from the config's placeholders to this container's layout.
+# Inject the token (Railway masks secrets in logs).
 sed -i "s|PASTE_YOUR_BOT_TOKEN_HERE|${LICHESS_BOT_TOKEN}|" "$CFG"
-sed -i "s|dir: \"/home/user/engine/bin\"|dir: \"/app/engine/bin\"|" "$CFG"
-sed -i "s|working_dir: \"/home/user/engine\"|working_dir: \"/app/engine\"|" "$CFG"
 
-# Optional overrides via env (handy for testing without editing the repo):
+# Optional overrides via env (handy for tuning without editing the repo):
 #   THREADS, HASH, MOVE_OVERHEAD
 if [ -n "${THREADS:-}" ];       then sed -i "s|Threads: [0-9]*|Threads: ${THREADS}|" "$CFG"; fi
 if [ -n "${HASH:-}" ];          then sed -i "s|Hash: [0-9]*|Hash: ${HASH}|" "$CFG"; fi
 if [ -n "${MOVE_OVERHEAD:-}" ]; then sed -i "s|Move Overhead: [0-9]*|Move Overhead: ${MOVE_OVERHEAD}|" "$CFG"; fi
 
 cd /app/lichess-bot
-echo "Starting lichess-bot (engine: /app/engine/bin/engine)..."
+echo "Starting lichess-bot (engine: /app/engine/wizard/wizard)..."
 exec python3 lichess-bot.py

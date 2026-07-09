@@ -12,5 +12,7 @@ game_records/
 *.zip
 *.nnue
 *.bin
+*.o
+*.d
 tools/__pycache__/
 *.pyc
