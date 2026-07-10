@@ -32,8 +32,8 @@ matchmaking:
   # Bias matchmaking UPWARD: floor at/above the bot's own rating (skip weaker bots)
   # with headroom past the 3100 target. NOTE: opponent_rating_difference is left
   # UNSET on purpose — setting it makes lichess-bot ignore this band.
-  opponent_min_rating: 2600            # never play below this
-  opponent_max_rating: 3300            # up to well above the 3100 goal
+  opponent_min_rating: 2900            # never play below this
+  opponent_max_rating: 3400            # up to well above the 3100 goal
   challenge_timeout: 5                 # minutes idle before seeking a game
 
 # --- Accept incoming challenges (in-band) ---
