@@ -1,25 +1,24 @@
-# lichess-bot configuration for the Wizard engine — tuned for BULLET rating climb.
-# Wizard is a Stockfish-15.1 derivative (GPL-3) with an integrated Polyglot book.
-# Paths are the container layout produced by the Dockerfile (/app/engine/...).
+# lichess-bot configuration for the Wizard 2.0 engine — tuned for BULLET rating climb.
+# Wizard 2.0 is a Stockfish-17.1 derivative (GPL-3); NNUE nets are embedded in the
+# binary. Paths are the container layout produced by the Dockerfile (/app/engine/...).
 
 token: "PASTE_YOUR_BOT_TOKEN_HERE"     # Lichess BOT token with bot:play scope (injected by entrypoint)
 url: "https://lichess.org/"
 
 engine:
   dir: "/app/engine/wizard"            # folder holding the `wizard` binary
-  working_dir: "/app/engine"           # so relative book/ paths resolve
+  working_dir: "/app/engine"
   name: "wizard"                       # the binary produced by `make` in wizard/
   protocol: "uci"
   ponder: true                         # think on the opponent's clock — a real bullet-rating win
 
   uci_options:
-    Threads: 3                         # runner has ~4 vCPU; 3 for the engine, 1 for bridge/OS
+    Threads: 3                         # Railway ~4 vCPU: 3 for engine + 1 for bridge/OS. On a 2-core
+                                       #   GitHub Actions runner set this to 2 (via the THREADS env var).
     Hash: 256                          # MB
-    Move Overhead: 150                 # ms; lowered from 400 — 0 flag losses gave margin to spend on depth (converts draws->wins). Override per-deploy with the MOVE_OVERHEAD env var.
-    Use NNUE: true                     # NNUE net is embedded in the binary (nn-ad9b42354671.nnue)
-    OwnBook: true                      # Wizard plays Polyglot book moves in the opening (our integration)
-    BookFile: "book/komodo.bin"        # relative to working_dir (downloaded by the Dockerfile)
-    BookBestMove: false                # weighted-random among good book moves (opening variety)
+    Move Overhead: 150                 # ms; latency safety margin for bullet (override via MOVE_OVERHEAD env)
+    # NOTE: Stockfish 17 always uses NNUE (nets embedded); it has no Use NNUE / EvalFile /
+    # OwnBook options, so none are set here. Openings come from the engine's own eval.
 
 # --- Seek games actively (drives the rating climb) ---
 matchmaking:
@@ -29,11 +28,11 @@ matchmaking:
   challenge_initial_time: 60           # 1+1 bullet
   challenge_increment: 1               # +1s/move: neutralizes runner->Lichess latency
   challenge_mode: "rated"
-  # Bias matchmaking UPWARD: floor at/above the bot's own rating (skip weaker bots)
-  # with headroom past the 3100 target. NOTE: opponent_rating_difference is left
-  # UNSET on purpose — setting it makes lichess-bot ignore this band.
-  opponent_min_rating: 2900            # never play below this
-  opponent_max_rating: 3400            # up to well above the 3100 goal
+  # Balanced climbing band for the stronger SF17 engine: floor a bit below rating so
+  # there are decisive-win games, ceiling near/above the 3100 target. (opponent_rating_difference
+  # left UNSET on purpose — setting it makes lichess-bot ignore this band.)
+  opponent_min_rating: 2800
+  opponent_max_rating: 3200
   challenge_timeout: 5                 # minutes idle before seeking a game
 
 # --- Accept incoming challenges (in-band) ---
@@ -44,8 +43,8 @@ challenge:
   only_bot: false
   max_increment: 10
   min_increment: 0
-  max_base: 300                        # up to 5 min base
-  min_base: 60                         # >= 1 min base so we accept bullet challenges too
+  max_base: 300
+  min_base: 60
   variants:
     - standard
   time_controls:
@@ -55,10 +54,10 @@ challenge:
     - rated
 
 # Misc
-abort_time: 20                         # seconds to wait before aborting a stalled game
+abort_time: 20
 rate_limiting_delay: 0
 greeting:
-  hello: ""                            # keep quiet (no chat spam)
+  hello: ""
   goodbye: ""
 
-pgn_directory: "game_records"          # save played games for later analysis
+pgn_directory: "game_records"

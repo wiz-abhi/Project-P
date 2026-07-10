@@ -1,26 +1,20 @@
-# Runs the chess engine as a Lichess bot on GitHub Actions.
+# Runs Wizard 2.0 (Stockfish 17.1 derivative) as a Lichess bot on GitHub Actions.
 #
-# GitHub Actions caveats this design works around:
-#  * Jobs are killed at 6h  -> timeout-minutes 350 (5h50m), and a cron relaunch.
-#  * Cron is unreliable/delayed -> concurrency queues the next run so as one job
-#    ends the queued one starts (near-seamless handoff); gaps self-heal and cost
-#    no rating (an idle Lichess bot is not penalized).
-#  * Free minutes -> REQUIRES A PUBLIC REPO (public repos get free standard runners).
-#  * ToS: Actions is meant for CI/CD, not persistent services — this is a gray area.
+# Continuous-handoff design (GitHub caps jobs at 6h): timeout-minutes 350 (~5h50m)
+# + a 5h cron relaunch; concurrency queues the next run so it takes over as one ends.
+# Requires a PUBLIC repo for free runner minutes.
 #
-# Setup (see deploy/GITHUB_ACTIONS.md):
+# Setup:
 #  1. Make the repo PUBLIC.
 #  2. Add a repository secret LICHESS_BOT_TOKEN (a Lichess BOT token, bot:play scope).
-#  3. Enable Actions, then run this workflow once from the Actions tab (workflow_dispatch).
+#  3. Actions tab -> run "lichess-bot" (workflow_dispatch).
 name: lichess-bot
 
 on:
-  workflow_dispatch: {}          # manual start / restart
+  workflow_dispatch: {}
   schedule:
-    - cron: "0 */5 * * *"        # every 5h; with the 5h50m job timeout this hands off continuously
+    - cron: "0 */5 * * *"
 
-# Only one bot instance at a time; do NOT cancel a running bot when a new schedule
-# fires — let it queue and take over when the current job times out.
 concurrency:
   group: lichess-bot
   cancel-in-progress: false
@@ -28,7 +22,7 @@ concurrency:
 jobs:
   play:
     runs-on: ubuntu-latest
-    timeout-minutes: 350         # ~5h50m, safely under the 6h hard cap
+    timeout-minutes: 350
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -36,42 +30,14 @@ jobs:
       - name: Install toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends g++ make python3 python3-pip python3-venv
+          sudo apt-get install -y --no-install-recommends g++ make python3 python3-pip python3-venv curl
           g++ --version | head -1
 
-      - name: Build engine + perft self-test
+      - name: Build Wizard 2.0 (embeds NNUE nets) + self-test
         run: |
-          make
-          ./bin/engine perft | tail -1        # must print ALL POSITIONS PASS
-
-      - name: Fetch NNUE net (git-ignored, so download at run time)
-        run: |
-          mkdir -p nets
-          if [ ! -s nets/nn-halfkp.nnue ]; then
-            curl -L --fail --retry 3 -o nets/nn-halfkp.nnue \
-              "https://tests.stockfishchess.org/api/nn/nn-62ef826d1a6d.nnue"
-          fi
-          printf 'uci\nquit\n' | ./bin/engine | grep -i "NNUE loaded" || (echo "NNUE net missing"; exit 1)
-
-      - name: Fetch opening book + smoke test
-        run: |
-          mkdir -p book
-          if [ ! -s book/komodo.bin ]; then
-            curl -L --fail --retry 3 -o book/komodo.bin \
-              "https://raw.githubusercontent.com/michaeldv/donna_opening_books/master/komodo.bin"
-          fi
-          # HARD gate: engine must play a book move from the start position.
-          printf 'setoption name OwnBook value true\nsetoption name BookFile value book/komodo.bin\nposition startpos\ngo movetime 2000\nquit\n' \
-            | ./bin/engine | grep -Eq "bestmove (e2e4|d2d4|g1f3|c2c4|c7c5|e7e5)" \
-            || { echo "book move failed"; exit 1; }
-          # SOFT check: 10 book-loaded runs; a teardown crash is benign for the
-          # long-lived bot engine, so only WARN (don't block deployment).
-          crashes=0
-          for i in $(seq 1 10); do
-            printf 'setoption name OwnBook value true\nsetoption name BookFile value book/komodo.bin\nposition startpos moves e2e4 e7e5\ngo depth 12\nquit\n' \
-              | ./bin/engine >/dev/null 2>&1 || crashes=$((crashes+1))
-          done
-          echo "book OK (functional). teardown-stability: $crashes/10 non-zero exits"
+          cd wizard
+          make -j build ARCH=x86-64-avx2 COMP=gcc     # uses ../scripts/net.sh to fetch+embed nets
+          ./wizard bench 2>&1 | tail -3               # must print "Nodes searched"
 
       - name: Install lichess-bot
         run: |
@@ -82,13 +48,13 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.LICHESS_BOT_TOKEN }}
         run: |
+          test -n "${BOT_TOKEN}" || { echo "LICHESS_BOT_TOKEN secret is not set"; exit 1; }
           cp deploy/config.yml ../lichess-bot/config.yml
           cd ../lichess-bot
-          # Point at the engine in this checkout, and inject the token (GitHub masks it in logs).
           sed -i "s|PASTE_YOUR_BOT_TOKEN_HERE|${BOT_TOKEN}|" config.yml
-          sed -i "s|dir: \"/home/user/engine/bin\"|dir: \"${GITHUB_WORKSPACE}/bin\"|" config.yml
-          sed -i "s|working_dir: \"/home/user/engine\"|working_dir: \"${GITHUB_WORKSPACE}\"|" config.yml
-          test -n "${BOT_TOKEN}" || (echo "LICHESS_BOT_TOKEN secret is not set"; exit 1)
+          sed -i "s|/app/engine/wizard|${GITHUB_WORKSPACE}/wizard|" config.yml
+          sed -i "s|/app/engine|${GITHUB_WORKSPACE}|" config.yml
+          sed -i "s|Threads: 3|Threads: 2|" config.yml     # GitHub-hosted runners are 2 vCPU
 
       - name: Run bot until job timeout
         working-directory: ../lichess-bot
