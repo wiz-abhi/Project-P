@@ -36,8 +36,10 @@ jobs:
       - name: Build Wizard 2.0 (embeds NNUE nets) + self-test
         run: |
           cd wizard
-          make -j build ARCH=x86-64-avx2 COMP=gcc     # uses ../scripts/net.sh to fetch+embed nets
-          ./wizard bench 2>&1 | tail -3               # must print "Nodes searched"
+          # profile-build = PGO (self-benches, recompiles with the profile) ~= +20-40 Elo free NPS.
+          # bmi2 (PEXT magic bitboards) is faster than avx2 on the Ice Lake/EPYC Actions runners.
+          make -j profile-build ARCH=x86-64-bmi2 COMP=gcc   # uses ../scripts/net.sh to fetch+embed nets
+          ./wizard bench 2>&1 | tail -3                     # must print "Nodes searched"
 
       - name: Install lichess-bot
         run: |
@@ -54,7 +56,7 @@ jobs:
           sed -i "s|PASTE_YOUR_BOT_TOKEN_HERE|${BOT_TOKEN}|" config.yml
           sed -i "s|/app/engine/wizard|${GITHUB_WORKSPACE}/wizard|" config.yml
           sed -i "s|/app/engine|${GITHUB_WORKSPACE}|" config.yml
-          sed -i "s|Threads: 3|Threads: 2|" config.yml     # GitHub-hosted runners are 2 vCPU
+          sed -i "s|Threads: 3|Threads: 4|" config.yml     # public-repo runners are 4 vCPU (use all of them)
 
       - name: Run bot until job timeout
         working-directory: ../lichess-bot

@@ -20,8 +20,11 @@ WORKDIR /app/engine
 COPY . /app/engine
 RUN cd wizard \
  && make clean \
- && make -j build ARCH=x86-64-avx2 COMP=gcc \
- && ./wizard bench 2>&1 | tail -4        # self-test: prints "Nodes searched"
+ && make -j profile-build ARCH=x86-64-avx2 COMP=gcc \
+ && ./wizard bench 2>&1 | tail -4        # PGO build (self-benches then recompiles) ~= +20-40 Elo
+# NOTE: profile-build runs the compiled binary during the build to collect the PGO profile, so the
+# build machine must support the target ARCH. avx2 is universally safe; bump to x86-64-bmi2 if the
+# build host is a modern Intel/AMD (faster PEXT magics) — the GitHub Actions runner already uses bmi2.
 
 # --- Install lichess-bot ---
 RUN git clone --depth 1 https://github.com/lichess-bot-devs/lichess-bot.git /app/lichess-bot \

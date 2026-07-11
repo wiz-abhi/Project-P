@@ -31,8 +31,8 @@ matchmaking:
   # Balanced climbing band for the stronger SF17 engine: floor a bit below rating so
   # there are decisive-win games, ceiling near/above the 3100 target. (opponent_rating_difference
   # left UNSET on purpose — setting it makes lichess-bot ignore this band.)
-  opponent_min_rating: 2800
-  opponent_max_rating: 3200
+  opponent_min_rating: 2850            # decisive band: high enough to gain real points...
+  opponent_max_rating: 3080            # ...ceiling at/just-below our rating so most games are winnable (not draw-bled)
   challenge_timeout: 5                 # minutes idle before seeking a game
 
 # --- Accept incoming challenges (in-band) ---
