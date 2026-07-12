@@ -41,6 +41,12 @@ jobs:
           make -j profile-build ARCH=x86-64-bmi2 COMP=gcc   # uses ../scripts/net.sh to fetch+embed nets
           ./wizard bench 2>&1 | tail -3                     # must print "Nodes searched"
 
+      - name: Fetch anti-draw opening book
+        run: |
+          mkdir -p book
+          curl -L --fail --retry 3 -o book/komodo.bin \
+            "https://raw.githubusercontent.com/michaeldv/donna_opening_books/master/komodo.bin"
+
       - name: Install lichess-bot
         run: |
           git clone --depth 1 https://github.com/lichess-bot-devs/lichess-bot.git ../lichess-bot
@@ -56,7 +62,8 @@ jobs:
           sed -i "s|PASTE_YOUR_BOT_TOKEN_HERE|${BOT_TOKEN}|" config.yml
           sed -i "s|/app/engine/wizard|${GITHUB_WORKSPACE}/wizard|" config.yml
           sed -i "s|/app/engine|${GITHUB_WORKSPACE}|" config.yml
-          sed -i "s|Threads: 3|Threads: 4|" config.yml     # public-repo runners are 4 vCPU (use all of them)
+          sed -i "s|Threads: [0-9]*|Threads: 4|" config.yml                # public-repo runners are 4 vCPU
+          sed -i "s|Move Overhead: [0-9]*|Move Overhead: 150|" config.yml  # higher: US runner -> Lichess(FR) ~90ms latency
 
       - name: Run bot until job timeout
         working-directory: ../lichess-bot
