@@ -26,6 +26,11 @@ RUN cd wizard \
 # build machine must support the target ARCH. avx2 is universally safe; bump to x86-64-bmi2 if the
 # build host is a modern Intel/AMD (faster PEXT magics) — the GitHub Actions runner already uses bmi2.
 
+# --- Anti-draw opening book (played by the lichess-bot bridge; see config.yml polyglot section) ---
+RUN mkdir -p book \
+ && curl -L --fail --retry 3 -o book/komodo.bin \
+      "https://raw.githubusercontent.com/michaeldv/donna_opening_books/master/komodo.bin"
+
 # --- Install lichess-bot ---
 RUN git clone --depth 1 https://github.com/lichess-bot-devs/lichess-bot.git /app/lichess-bot \
  && pip install --no-cache-dir -r /app/lichess-bot/requirements.txt

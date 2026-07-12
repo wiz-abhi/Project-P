@@ -13,12 +13,22 @@ engine:
   ponder: true                         # think on the opponent's clock — a real bullet-rating win
 
   uci_options:
-    Threads: 3                         # Railway ~4 vCPU: 3 for engine + 1 for bridge/OS. On a 2-core
-                                       #   GitHub Actions runner set this to 2 (via the THREADS env var).
-    Hash: 256                          # MB
-    Move Overhead: 150                 # ms; latency safety margin for bullet (override via MOVE_OVERHEAD env)
-    # NOTE: Stockfish 17 always uses NNUE (nets embedded); it has no Use NNUE / EvalFile /
-    # OwnBook options, so none are set here. Openings come from the engine's own eval.
+    Threads: 4                         # all Railway vCPUs — the entrypoint auto-detects nproc and overrides this
+    Hash: 512                          # MB (Railway has the RAM)
+    Move Overhead: 100                 # ms; low on Railway EU (~15-25ms to Lichess) — reclaims think time vs the old 150
+    # Stockfish 18 always uses NNUE (nets embedded); no Use NNUE / EvalFile / OwnBook engine options.
+
+  # Anti-draw opening book — played by the lichess-bot BRIDGE (engine-independent) before the
+  # engine sees the position. Steers into varied, imbalanced-but-sound lines to cut the
+  # engine-vs-engine draw rate that pins the rating. Book downloaded by the Dockerfile.
+  polyglot:
+    enabled: true
+    book:
+      standard:
+        - "/app/engine/book/komodo.bin"
+    min_weight: 1
+    selection: "weighted_random"       # variety > always-best: avoids the same drawish mainlines every game
+    max_depth: 8                        # book only the first ~8 plies, then hand to the engine
 
 # --- Seek games actively (drives the rating climb) ---
 matchmaking:

@@ -19,7 +19,11 @@ sed -i "s|PASTE_YOUR_BOT_TOKEN_HERE|${LICHESS_BOT_TOKEN}|" "$CFG"
 
 # Optional overrides via env (handy for tuning without editing the repo):
 #   THREADS, HASH, MOVE_OVERHEAD
-if [ -n "${THREADS:-}" ];       then sed -i "s|Threads: [0-9]*|Threads: ${THREADS}|" "$CFG"; fi
+# Use ALL available CPU cores for the engine (Railway plan may give 2/4/8+ vCPU). The Python
+# bridge is near-idle during search, so it doesn't need a reserved core. Override with THREADS env.
+CORES=$(nproc 2>/dev/null || echo 4)
+sed -i "s|Threads: [0-9]*|Threads: ${THREADS:-$CORES}|" "$CFG"
+echo "Set Threads: ${THREADS:-$CORES} (detected ${CORES} vCPU)"
 if [ -n "${HASH:-}" ];          then sed -i "s|Hash: [0-9]*|Hash: ${HASH}|" "$CFG"; fi
 if [ -n "${MOVE_OVERHEAD:-}" ]; then sed -i "s|Move Overhead: [0-9]*|Move Overhead: ${MOVE_OVERHEAD}|" "$CFG"; fi
 
