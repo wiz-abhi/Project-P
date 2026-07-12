@@ -1,0 +1,60 @@
+# BotLi configuration for Wizard 3.0 (Stockfish 18) — modeled on the top rated bullet
+# bots (BotLi + strong books + aggressive matchmaking + concurrency + anti-draw play).
+# The token is injected at runtime by deploy/botli-entrypoint.sh from LICHESS_BOT_TOKEN.
+
+token: "PASTE_YOUR_BOT_TOKEN_HERE"
+
+engines:
+  standard:
+    dir: "./engines"
+    name: "wizard"                     # our Stockfish-18 build (NNUE nets embedded in the binary)
+    ponder: true
+    uci_options:
+      Threads: 2                       # per game; with concurrency 2 that's 4 threads on a 4-vCPU Railway box
+      Hash: 512
+      Move Overhead: 100               # low — Railway EU has ~15-25ms latency to Lichess
+
+# --- Strong opening book (played before the engine) — imbalanced/sound lines to cut the draw rate ---
+opening_books:
+  enabled: true
+  priority: 900
+  books:
+    standard:
+      selection: weighted_random       # variety across good book lines (anti-draw / anti-prep)
+      max_depth: 16
+      names:
+        - MainBook
+books:
+  MainBook: "./engines/book.bin"
+
+# --- Relentless matchmaking (this is how the top bots rack up 10k+ games) ---
+matchmaking:
+  delay: 10                            # seconds between seeking games — aggressive (default is 480!)
+  timeout: 30                          # wait up to 30s for an opponent to accept, else try the next
+  selection: cyclic                    # cycle through the opponent pool constantly
+  types:
+    bullet:
+      tc: 1+0                          # decisive bullet (no increment → opponents flag/blunder → draws become wins)
+      rated: true
+      variant: standard
+      min_rating_diff: -250            # play down to 250 below us (beatable, decisive wins)
+      max_rating_diff: 100             # ...up to only ~100 above (don't farm un-winnable draws)
+      target_rating_diff: -60          # aim slightly below our rating
+
+# --- Accept incoming challenges too (human games are UNCAPPED — free volume) ---
+challenge:
+  concurrency: 2                       # two rated games at once = faster grind (Railway 4 vCPU)
+  bot:
+    variants: [standard]
+    time_controls: [bullet, blitz]
+    modes: [rated]
+  human:
+    variants: [standard]
+    time_controls: [bullet, blitz]
+    modes: [rated]
+
+# --- Anti-draw play: never agree to a draw, never resign — make them prove the win ---
+offer_draw:
+  enabled: false
+resign:
+  enabled: false
