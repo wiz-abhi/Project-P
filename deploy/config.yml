@@ -1,5 +1,5 @@
-# lichess-bot configuration for the Wizard 2.0 engine — tuned for BULLET rating climb.
-# Wizard 2.0 is a Stockfish-17.1 derivative (GPL-3); NNUE nets are embedded in the
+# lichess-bot configuration for the Wizard 3.0 engine — tuned for BULLET rating climb.
+# Wizard 3.0 is a Stockfish-18 derivative (GPL-3); NNUE nets are embedded in the
 # binary. Paths are the container layout produced by the Dockerfile (/app/engine/...).
 
 token: "PASTE_YOUR_BOT_TOKEN_HERE"     # Lichess BOT token with bot:play scope (injected by entrypoint)

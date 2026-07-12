@@ -1,23 +1,23 @@
-Wizard 2.0 — NOTICE / Attribution
+Wizard 3.0 — NOTICE / Attribution
 =================================
 
-Wizard 2.0 is a derivative work of Stockfish 17.1, a UCI chess engine.
-Stockfish is Copyright (C) 2004-2025 The Stockfish developers (see the
+Wizard 3.0 is a derivative work of Stockfish 18, a UCI chess engine.
+Stockfish is Copyright (C) 2004-2026 The Stockfish developers (see the
 AUTHORS file in the upstream project) and is licensed under the GNU General
-Public License version 3 (GPL-3). As a derivative work, Wizard 2.0 is
+Public License version 3 (GPL-3). As a derivative work, Wizard 3.0 is
 likewise distributed under GPL-3 (see the license header in each source
 file).
 
 Upstream project : https://github.com/official-stockfish/Stockfish
-Derived from     : Stockfish 17.1
+Derived from     : Stockfish 18
 
-Modifications by the Wizard authors on top of Stockfish 17.1:
+Modifications by the Wizard authors on top of Stockfish 18:
   - Engine identity / branding (UCI `id name` / `id author`).
-  - Bullet-oriented lichess-bot deployment (Docker / GitHub Actions), with a
-    Polyglot opening book played through the bridge.
+  - Bullet-oriented lichess-bot deployment (Docker / GitHub Actions), PGO
+    (profile-build) release binaries, and matchmaking/time tuning.
 
-The NNUE evaluation networks (nn-1c0000000000.nnue and nn-37f18f62d772.nnue)
-are the Stockfish 17.1 default networks, distributed under GPL-3 as part of
+The NNUE evaluation networks (nn-c288c895ea92.nnue and nn-37f18f62d772.nnue)
+are the Stockfish 18 default networks, distributed under GPL-3 as part of
 Stockfish.
 
 Nothing in this notice limits your rights under the GPL-3.
