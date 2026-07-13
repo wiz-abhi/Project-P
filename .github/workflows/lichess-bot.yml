@@ -1,13 +1,10 @@
-# Runs Wizard 2.0 (Stockfish 17.1 derivative) as a Lichess bot on GitHub Actions.
+# Runs Wizard 3.0 (Stockfish 18) under the BotLi framework on GitHub Actions.
 #
-# Continuous-handoff design (GitHub caps jobs at 6h): timeout-minutes 350 (~5h50m)
-# + a 5h cron relaunch; concurrency queues the next run so it takes over as one ends.
-# Requires a PUBLIC repo for free runner minutes.
-#
-# Setup:
-#  1. Make the repo PUBLIC.
-#  2. Add a repository secret LICHESS_BOT_TOKEN (a Lichess BOT token, bot:play scope).
-#  3. Actions tab -> run "lichess-bot" (workflow_dispatch).
+# Continuous-handoff design (GitHub caps jobs at 6h): timeout 350 (~5h50m) + a 5h cron
+# relaunch; concurrency queues the next run. Requires a PUBLIC repo for free minutes.
+# NOTE: a job that ends mid-game abandons that game — so concurrency is forced to 1 here
+# (fewer abandoned games per relaunch) and the increment time control (1+1) is used because
+# GitHub runners are in US Azure (~90ms to Lichess in France) and 1+0 would flag.
 name: lichess-bot
 
 on:
@@ -30,41 +27,39 @@ jobs:
       - name: Install toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends g++ make python3 python3-pip python3-venv curl
-          g++ --version | head -1
+          sudo apt-get install -y --no-install-recommends g++ make python3 python3-pip curl
+          python3 -m pip install --quiet uv
 
-      - name: Build Wizard 2.0 (embeds NNUE nets) + self-test
+      - name: Build Wizard 3.0 (Stockfish 18) + self-test
         run: |
           cd wizard
-          # profile-build = PGO (self-benches, recompiles with the profile) ~= +20-40 Elo free NPS.
-          # bmi2 (PEXT magic bitboards) is faster than avx2 on the Ice Lake/EPYC Actions runners.
-          make -j profile-build ARCH=x86-64-bmi2 COMP=gcc   # uses ../scripts/net.sh to fetch+embed nets
-          ./wizard bench 2>&1 | tail -3                     # must print "Nodes searched"
+          make -j profile-build ARCH=x86-64-bmi2 COMP=gcc   # PGO; bmi2 is fine on Actions runners
+          ./wizard bench 2>&1 | tail -3
 
-      - name: Fetch anti-draw opening book
+      - name: Set up BotLi (engine binary + opening book)
         run: |
-          mkdir -p book
-          curl -L --fail --retry 3 -o book/komodo.bin \
+          git clone --depth 1 https://github.com/Torom/BotLi.git ../botli
+          cd ../botli
+          uv sync || python3 -m pip install --quiet -r requirements.txt || true
+          mkdir -p engines
+          cp "${GITHUB_WORKSPACE}/wizard/wizard" engines/wizard
+          chmod +x engines/wizard
+          curl -L --fail --retry 3 -o engines/book.bin \
             "https://raw.githubusercontent.com/michaeldv/donna_opening_books/master/komodo.bin"
 
-      - name: Install lichess-bot
-        run: |
-          git clone --depth 1 https://github.com/lichess-bot-devs/lichess-bot.git ../lichess-bot
-          python3 -m pip install --quiet -r ../lichess-bot/requirements.txt
-
-      - name: Configure lichess-bot
+      - name: Configure BotLi (token + Actions-safe overrides)
         env:
           BOT_TOKEN: ${{ secrets.LICHESS_BOT_TOKEN }}
         run: |
           test -n "${BOT_TOKEN}" || { echo "LICHESS_BOT_TOKEN secret is not set"; exit 1; }
-          cp deploy/config.yml ../lichess-bot/config.yml
-          cd ../lichess-bot
+          cp deploy/botli-config.yml ../botli/config.yml
+          cd ../botli
           sed -i "s|PASTE_YOUR_BOT_TOKEN_HERE|${BOT_TOKEN}|" config.yml
-          sed -i "s|/app/engine/wizard|${GITHUB_WORKSPACE}/wizard|" config.yml
-          sed -i "s|/app/engine|${GITHUB_WORKSPACE}|" config.yml
-          sed -i "s|Threads: [0-9]*|Threads: 4|" config.yml                # public-repo runners are 4 vCPU
-          sed -i "s|Move Overhead: [0-9]*|Move Overhead: 150|" config.yml  # higher: US runner -> Lichess(FR) ~90ms latency
+          sed -i "s|tc: 1+0|tc: 1+1|" config.yml                         # US runner -> Lichess(FR) latency: keep the increment
+          sed -i "s|Move Overhead: [0-9]*|Move Overhead: 150|" config.yml # higher margin for ~90ms latency
+          sed -i "s|concurrency: 2|concurrency: 1|" config.yml            # fewer abandoned games when the 6h job ends
 
-      - name: Run bot until job timeout
-        working-directory: ../lichess-bot
-        run: python3 lichess-bot.py
+      - name: Run BotLi until job timeout
+        working-directory: ../botli
+        run: |
+          if [ -d .venv ]; then uv run user_interface.py matchmaking; else python3 user_interface.py matchmaking; fi
