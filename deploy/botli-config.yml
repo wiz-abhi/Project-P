@@ -135,9 +135,12 @@ matchmaking:
       tc: 1+0                          # decisive bullet (no increment -> opponents flag/blunder -> draws become wins)
       rated: true
       variant: standard
-      min_rating_diff: -250            # play down to 250 below us (beatable, decisive wins)
-      max_rating_diff: 50              # draws vs higher bots gain ~nothing; don't feed the cap to them
-      target_rating_diff: -80          # aim below our rating where wins are possible
+      # NOTE: BotLi compares abs(opponent_rating - ours) against these — the band is
+      # symmetric, there is no "prefer lower-rated" direction. Blacklist handles the
+      # unbeatable-draw bots instead.
+      min_rating_diff: 0
+      max_rating_diff: 250             # anyone within 250 points either side
+      target_rating_diff: 100          # prefer opponents ~100 points away (closest to target first)
 
 messages:
   greeting: ""
