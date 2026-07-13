@@ -16,6 +16,7 @@ engines:
       Threads: 2                       # per game; concurrency 2 => 4 threads on a 4-vCPU Railway box
       Hash: 512
       Move Overhead: 100               # low on Railway EU (~15-25ms to Lichess)
+    limits:                            # required by BotLi; empty = no early move-calc limits
 
 syzygy:
   standard:
@@ -23,6 +24,18 @@ syzygy:
     paths:
       - "/tb/standard"
     max_pieces: 7
+    instant_play: true
+  antichess:
+    enabled: false
+    paths:
+      - "/tb/antichess"
+    max_pieces: 6
+    instant_play: true
+  atomic:
+    enabled: false
+    paths:
+      - "/tb/atomic"
+    max_pieces: 6
     instant_play: true
 
 gaviota:
