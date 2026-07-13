@@ -136,8 +136,8 @@ matchmaking:
       rated: true
       variant: standard
       min_rating_diff: -250            # play down to 250 below us (beatable, decisive wins)
-      max_rating_diff: 100             # ...up to only ~100 above (don't farm un-winnable draws)
-      target_rating_diff: -60          # aim slightly below our rating
+      max_rating_diff: 50              # draws vs higher bots gain ~nothing; don't feed the cap to them
+      target_rating_diff: -80          # aim below our rating where wins are possible
 
 messages:
   greeting: ""
@@ -147,7 +147,24 @@ messages:
 
 whitelist:
 
+# Chronic draw partners (SF-derivative bots we've NEVER beaten — every game vs them is a
+# draw, which wastes the 100 bot-games/day cap and bleeds rating when they're rated below us).
+# Wins only come from non-SF engines that flag at 1+0, so keep the pool pointed at those.
 blacklist:
+  - BOT_Stockfish13
+  - Classic_BOT-v2
+  - ClassicLegendBot_v2
+  - codabot
+  - BlueMoonBot
+  - Moment-That-Inspires
+  - ToromBot
+  - PiFishBob
+  - CookieCompote28
+  - ZaaVeeRRR
+  - chessbot2880
+  - PumpkinBotLite
+  - RubiChessDemolisher
+  - Obsidian-Demolisher
 
 online_blacklists:
 
