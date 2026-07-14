@@ -127,8 +127,11 @@ challenge:
       - rated
 
 matchmaking:
-  delay: 10                            # seconds idle before seeking a game — aggressive (default is 480)
-  timeout: 30                          # cancel a challenge after 30s if not accepted
+  delay: 60                            # seconds idle before seeking a game. 10 was too hot: a stretch of
+                                       # "No opponent available" retried every 10s and got the account
+                                       # rate-limited by Lichess for HOURS. 60 still allows ~40+ games/day.
+  timeout: 60                          # give opponents a full minute to accept (fewer canceled challenges,
+                                       # which count against us in Lichess rate-limiting)
   selection: cyclic                    # cycle through the opponent pool constantly
   types:
     bullet:
