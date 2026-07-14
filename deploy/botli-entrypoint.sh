@@ -31,10 +31,66 @@ if ! printf 'uci\nisready\nquit\n' | timeout 30 ./engines/wizard | grep -m1 ucio
 fi
 echo "Engine OK."
 
-echo "Starting BotLi (Wizard 3.0 / Stockfish 18) in matchmaking mode..."
-# Prefer the uv-managed venv (BotLi's documented run path); fall back to plain python.
-if command -v uv >/dev/null 2>&1 && [ -d .venv ]; then
-  exec uv run user_interface.py matchmaking
-else
-  exec python3 user_interface.py matchmaking
+# --- Run BotLi, with an optional rating cap --------------------------------
+# If STOP_AT_RATING is set (e.g. 3100), the bot stops playing once it reaches
+# that rating in STOP_PERF (default: bullet), locking the rating in. Games in
+# progress finish gracefully — we send SIGTERM, and BotLi drains its running
+# game tasks before exiting (game_manager.run: `for task in self.tasks: await task`),
+# so nothing is abandoned/forfeited. Leave STOP_AT_RATING unset to play forever.
+STOP_PERF="${STOP_PERF:-bullet}"
+POLL_SECONDS="${POLL_SECONDS:-120}"
+
+run_botli() {
+  echo "Starting BotLi (Wizard 3.0 / Stockfish 18) in matchmaking mode..."
+  if command -v uv >/dev/null 2>&1 && [ -d .venv ]; then
+    uv run user_interface.py matchmaking &
+  else
+    python3 user_interface.py matchmaking &
+  fi
+  BOTLI_PID=$!
+}
+
+# Forward container SIGTERM/redeploy to BotLi so it shuts down gracefully too.
+trap 'echo "Signal received — stopping BotLi gracefully."; kill -TERM "${BOTLI_PID:-0}" 2>/dev/null || true; wait "${BOTLI_PID:-0}" 2>/dev/null || true; exit 0' TERM INT
+
+current_rating() {
+  curl -s --max-time 10 "https://lichess.org/api/account" \
+    -H "Authorization: Bearer ${LICHESS_BOT_TOKEN}" \
+    | python3 -c "import json,sys;print(json.load(sys.stdin)['perfs']['${STOP_PERF}']['rating'])" 2>/dev/null || echo 0
+}
+
+# No cap configured -> original behaviour: run forever in the foreground.
+if [ -z "${STOP_AT_RATING:-}" ]; then
+  run_botli
+  wait "$BOTLI_PID"
+  exit $?
 fi
+
+echo "Rating cap ENABLED: bot will stop once ${STOP_PERF} rating >= ${STOP_AT_RATING}."
+while true; do
+  R="$(current_rating)"
+  # Fail-safe: a non-numeric/0 reading (API hiccup) is treated as "below target"
+  # so a transient error never stops the bot by mistake.
+  if [ "${R:-0}" -ge "$STOP_AT_RATING" ] 2>/dev/null; then
+    echo "[cap] ${STOP_PERF} rating ${R} >= ${STOP_AT_RATING}: target held. Bot idle (not playing)."
+    echo "[cap] To resume: lower/unset STOP_AT_RATING in Railway Variables and redeploy."
+    sleep 3600 & wait $!    # stay up (healthy container) without playing; re-check hourly
+    continue
+  fi
+
+  echo "[cap] ${STOP_PERF} rating ${R} < ${STOP_AT_RATING}: playing."
+  run_botli
+  while kill -0 "$BOTLI_PID" 2>/dev/null; do
+    sleep "$POLL_SECONDS" & wait $!
+    R="$(current_rating)"
+    echo "[cap] ${STOP_PERF} rating: ${R} / target ${STOP_AT_RATING}"
+    if [ "${R:-0}" -ge "$STOP_AT_RATING" ] 2>/dev/null; then
+      echo "[cap] Target reached (${R}). SIGTERM -> BotLi finishes in-progress games, then exits."
+      kill -TERM "$BOTLI_PID" 2>/dev/null || true
+      wait "$BOTLI_PID" 2>/dev/null || true
+      break
+    fi
+  done
+  # Loop back: re-check rating. If the games that just finished dropped us back
+  # under target, we restart and keep going; if we're still >= target, we idle.
+done
